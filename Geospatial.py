@@ -1,6 +1,18 @@
-import geopandas as gpd
-import pandas as pd
+import datetime
+import math
 import os
+import time
+import timeit
+import warnings
+
+import geopandas as gpd
+import numpy as np
+import osmnx as ox
+import pandas as pd
+from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+from shapely.geometry import Point
+from Statistics.basic_stats import shannon_div
 
 
 class City:
@@ -40,25 +52,6 @@ class City:
         print('Class ' + self.city_name + ' created @ ' + str(datetime.datetime.now()))
 
     # Scrape and clean data
-    def merge_csv(self, path):
-        os.chdir(path)
-        file_out = "merged.csv"
-        if os.path.exists(file_out):
-            os.remove(file_out)
-        file_pattern = ".csv"
-        list_of_files = [file for file in glob.glob('*' + file_pattern)]
-        print(list_of_files)
-        # Consolidate all CSV files into one object
-        result_obj = pd.concat([pd.read_csv(file) for file in list_of_files])
-        # Convert the above object into a csv file and export
-        result_obj.to_csv(file_out, index=False, encoding="utf-8")
-        df = pd.read_csv("merged.csv")
-        full_path = os.path.realpath(__file__)
-        path, filename = os.path.split(full_path)
-        os.chdir(path)
-        print('CSVs successfully merged')
-        return df
-
     def check_file_databases(self, bound=True, net=True, census=True, bcaa=True, icbc=True):
         # Check if boundary data exists and download it from OSM if not
         if bound:
@@ -273,7 +266,7 @@ class City:
         except:
             pass
         out_gdf.to_file('Databases/BC Assessment.gpkg', driver='GPKG', layer='land_assessment_fabric')
-        return print('BCA data successfully merged')
+        return out_gdf
 
     def aggregate_bca_from_location(self):
         gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric_fxd')
