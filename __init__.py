@@ -1,4 +1,4 @@
-from Analyzer import City
+from Geospatial import City
 
 
 # Process mobility related indicators for elementslab
