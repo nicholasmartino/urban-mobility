@@ -16,14 +16,15 @@ from Statistics.basic_stats import shannon_div
 
 
 class City:
-    def __init__(self, directory=os.path.dirname(__file__), municipality='City, State',
+    def __init__(self, directory='../Geospatial/Databases/',
+                 municipality='City, State',
                  census_file='Statistics Canada.gpkg',
                  tax_assessment_file='BC Assessment.gpkg'):
         self.municipality = municipality
         self.directory = directory
-        self.census_file = 'Databases/' + census_file
-        self.assessment = 'Databases/' + tax_assessment_file
-        self.gpkg = 'Databases/' + self.municipality + '.gpkg'
+        self.census_file = self.directory + census_file
+        self.assessment = self.directory + tax_assessment_file
+        self.gpkg = self.directory + self.municipality + '.gpkg'
         self.city_name = self.municipality.partition(',')[0]
         self.crs = '26910'
         try:
@@ -65,57 +66,7 @@ class City:
                 self.boundary.to_crs({'init': 'epsg:26910'}, inplace=True)
                 self.boundary.to_file(self.gpkg, layer='land_municipal_boundary', driver='GPKG')
                 self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
-
-        # Check if topography data points exists and join it from .hgt file if not (#failed)
-        """
-        if topo:
-            bbox = self.boundary.geometry.envelope
-            print(bbox)
-
-            # Create spatial grid within City boundary
-            geometry_cut = ox.quadrat_cut_geometry(bbox[0], quadrat_width=400)
-            print(geometry_cut)
-            geometry_cut.plot()
-            plt.show()
-
-            # Reproject grid to WGS84
-            geometry_cut.crs = {'init': 'epsg:' + self.crs}
-            geometry_cut.to_crs({'init': 'epsg:4326'}, inplace=True)
-
-            # Find centroid for each grid cell
-            centroids = []
-            for geom in geometry_cut.geometry:
-                centroids.append(geom.centroid)
-            geometry_cut['centroids'] = centroids
-
-            # Define function to get elevation from .hgt file
-            def elevation(hgt_file, lon, lat):
-                SAMPLES = 1201  # Change this to 3601 for SRTM1
-                with open(hgt_file, 'rb') as hgt_data:
-                    # Each data is 16bit signed integer(i2) - big endian(>)
-                    elevations = np.fromfile(hgt_data, np.dtype('>i2'), SAMPLES * SAMPLES) \
-                        .reshape((SAMPLES, SAMPLES))
-
-                    lat_row = int(round((lat - int(lat)) * (SAMPLES - 1), 0))
-                    lon_row = int(round((lon - int(lon)) * (SAMPLES - 1), 0))
-
-                    return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
-
-            # Extract latitude and longitude of centroids
-            elevations = []
-            for pt in geometry_cut.centroids:
-                # Define .hgt file to extract topographic data based on latitude and longitude
-                lon = str((int(pt.x[0]) * -1) + 1)
-                lat = str(int(pt.y[0]))
-                filename = 'N' + lat + 'W' + lon + '.hgt'
-
-                # Get elevation and append it to list
-                elevations.append(elevation('Databases/Topography/'+filename,
-                                            lon=pt.x[0], lat=pt.y[0]))
-
-            # Create new column at the grid DataFrame with the new elevation
-            geometry_cut['elevations'] = elevations
-        """
+            s_index = self.boundary.sindex
 
         # Check if network data exists and download it from OSM if not
         if net:
@@ -158,12 +109,12 @@ class City:
         # Check if BC Assessment data exists and join it from BCAA database if not
         if bcaa:
             try:
-                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric_fxd')
+                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
                 print(self.city_name + ' BC Assessment data read from database')
             except:
                 # Spatial join with spatial index BC Assessment data
                 start_time = time.time()
-                gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric_fxd')
+                gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
                 print("BC Assessment data read in %s minutes" % str(
                     round((time.time() - start_time) / 60, 2)))
                 start_time = time.time()
@@ -171,7 +122,8 @@ class City:
                 matches.to_file(self.gpkg, layer='land_assessment_fabric')
                 print("Spatial join and export for " + self.city_name + " performed in %s minutes " % str(
                     round((time.time() - start_time) / 60, 2)))
-                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric_fxd')
+                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
+                self.parcels.sindex()
 
         # Check if ICBC crash data exists and join it from ICBC database if not
         if icbc:
@@ -194,7 +146,7 @@ class City:
         # try: df = pd.read_csv(filepath)
         # except:
         #     # Group data by Property ID
-        #     inventory = r'Databases\BCA\Inventory Information - RY 2017.csv'
+        #     inventory = r'..\Geospatial\Databases\BCA\Inventory Information - RY 2017.csv'
         #     df = pd.read_csv(inventory, engine='python')
         #     df.fillna(0, inplace=True)
         #     df = df.groupby('ROLL_NUM').agg({
@@ -228,21 +180,23 @@ class City:
         #     df = pd.read_csv(filepath)
         # print('BCA csv layer loaded with '+str(len(df))+' rows')
 
-        inventory = r'Databases\BCA\Inventory Information - RY 2017.csv'
+        inventory = self.directory+r'BCA\Inventory Information - RY 2017.csv'
         df = pd.read_csv(inventory)
 
         # Load and process Roll Number field on both datasets
         gdf = gpd.read_file(
             r'\\nas.sala.ubc.ca\ELabs\50_projects\16_PICS\07_BCA data\Juchan_backup\BCA_2017\BCA_2017_roll_number_method\BCA_2017_roll_number_method.gdb',
             layer='ASSESSMENT_FABRIC')
+        s_index = gdf.sindex
+        gdf = gpd.sjoin(gdf, self.boundary, op='within')
         gdf['JUROL'] = gdf['JUROL'].astype(str)
+        gdf = gdf[gdf.geometry.area > 71]
         print('BCA spatial layer loaded with ' + str(len(gdf)) + ' parcels')
         df['JUR'] = df['JUR'].astype(int).astype(str)
         df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
         df['JUROL'] = df['JUR'] + df['ROLL_NUM']
 
-        full_gdfs = {}
-        full_gdfs['0z'] = pd.merge(gdf, df, on='JUROL')
+        full_gdfs = {'0z': pd.merge(gdf, df, on='JUROL')}
         print(': ' + str(len(full_gdfs['0z'])))
 
         for i in range(1, 7):
@@ -252,24 +206,24 @@ class City:
             string = str(''.join(strings))
             df[string + 'z'] = string
             df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
-            df.to_csv('Databases/jurol_test' + str(i) + 'z.csv')
             full_gdf = pd.merge(gdf, df, on='JUROL')
-            full_gdf.drop(full_gdf[string + 'z'], axis=1)
-            full_gdfs[string + 'z'] = full_gdf
+            full_gdf.drop([string + 'z'], axis=1)
+            full_gdfs[str(i) + 'z'] = full_gdf
             print(string + ': ' + str(len(full_gdf)))
 
         # Merge and export spatial and non-spatial datasets
-        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
+        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True, axis=1)
+        print(len(out_gdf))
+
         try:
-            with open('Databases/BC_Assessment_unjoined.csv', 'w') as file:
+            with open(self.directory+'BC_Assessment_unjoined.csv', 'w') as file:
                 file.write([set(out_gdf['JUROL']).symmetric_difference(gdf['JUROL'])].sort())
-        except:
-            pass
-        out_gdf.to_file('Databases/BC Assessment.gpkg', driver='GPKG', layer='land_assessment_fabric')
+        except: pass
+        out_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_fabric')
         return out_gdf
 
     def aggregate_bca_from_location(self):
-        gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric_fxd')
+        gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
         centroids = []
         for geom in gdf.geometry:
             print(geom)
@@ -391,6 +345,7 @@ class City:
             gdf = None
         if samples is not None:
             gdf = gdf.sample(samples)
+            gdf.sindex()
 
         self.gdfs = {'_' + unit: gdf}
         buffers = {}
@@ -403,6 +358,7 @@ class City:
                 buffers[radius].append(lda_buffer)
         for radius in service_areas:
             self.gdfs['_r' + str(radius) + 'm'] = gpd.GeoDataFrame(geometry=buffers[radius], crs=gdf.crs)
+            self.gdfs['_r' + str(radius) + 'm'].sindex()
         self.params = {'gdf': gdf, 'service_areas': service_areas}
         print(self.gdfs)
         print('Parameters set for ' + str(len(self.gdfs)) + ' spatial scales')
@@ -608,39 +564,20 @@ class City:
         print('Processing finished @ ' + str(datetime.datetime.now()))
         return None
 
+    def network_gravity(self):
+        return self
+
     def diversity_indicators(self):
         # Process 'Land Use Diversity', 'Parcel Size Diversity', 'Dwelling Diversity', 'Block Use Mix Dissimilarity'
 
         gdf = self.params['gdf']
         service_areas = self.params['service_areas']
-        bcaa = gdf.read_file(self.gpkg, layer='land_assessment_fabric_agg')
         dict_of_dicts = {}
 
         print('> Processing spatial diversity indicators')
         start_time = timeit.default_timer()
 
-        use_div = {}
-        dwell_div = {}
-        parc_area_div = {}
-        blck_area_div = {}
-        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
-            use_div[key] = []
-            dwell_div[key] = []
-            parc_area_div[key] = []
-            blck_area_div[key] = []
-
-            for pol in geom:
-                print(None)
-
-        gdf = self.params['gdf']
-        service_areas = self.params['service_areas']
-
-        # Create new columns in the GeoDataframe
-        for radius in service_areas:
-            print(gdf['use_div_' + str(radius)])
-
-        # Filter street network by type
-
+        # Reclassify land uses for BC Assessment data
         uses = {
             'residential': ['000 - Single Family Dwelling', '030 - Strata-Lot Residence (Condominium)',
                             '032 - Residential Dwelling with Suite',
@@ -726,6 +663,30 @@ class City:
         self.parcels['elab_use'] = new_uses
         print(self.parcels.elab_use)
 
+        # Process diversity indicators
+        use_div = {}
+        dwell_div = {}
+        parc_area_div = {}
+        blck_area_div = {}
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
+            use_div[key] = []
+            dwell_div[key] = []
+            parc_area_div[key] = []
+            blck_area_div[key] = []
+
+            jgdf = gpd.sjoin(geom, self.parcels, op="within")
+
+
+
+        gdf = self.params['gdf']
+        service_areas = self.params['service_areas']
+
+        # Create new columns in the GeoDataframe
+        for radius in service_areas:
+            print(gdf['use_div_' + str(radius)])
+
+
+
         # Append all processed data to a GeoDataframe
         for key, value in dict_of_dicts.items():
             for key2, value2 in value.items():
@@ -742,8 +703,10 @@ class City:
     def linear_correlation_lda(self):
         gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
         r2 = gdf.corr(method='pearson')
-        r2.to_csv('Databases/' + self.municipality + '_r2.csv')
+        r2.to_csv(self.directory + self.municipality + '_r2.csv')
         print(r2)
+
+
 
 
 class Sandbox:
