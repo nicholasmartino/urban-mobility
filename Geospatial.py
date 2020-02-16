@@ -147,7 +147,6 @@ class City:
                 print("Spatial join and export for " + self.city_name + " performed in %s minutes " % str(
                     round((time.time() - start_time) / 60, 2)))
                 self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
-                self.parcels.sindex()
 
         # Check if ICBC crash data exists and join it from ICBC database if not
         if icbc:
