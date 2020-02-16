@@ -1,3 +1,27 @@
+"""
+MIT License
+
+Copyright (c) 2020 Nicholas Martino
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
+
 import datetime
 import math
 import os
@@ -180,13 +204,13 @@ class City:
         #     df = pd.read_csv(filepath)
         # print('BCA csv layer loaded with '+str(len(df))+' rows')
 
-        inventory = self.directory+r'BCA\Inventory Information - RY 2017.csv'
+        inventory = self.directory+'BCA/Inventory Information - RY 2017.csv'
         df = pd.read_csv(inventory)
 
         # Load and process Roll Number field on both datasets
-        gdf = gpd.read_file(
-            r'\\nas.sala.ubc.ca\ELabs\50_projects\16_PICS\07_BCA data\Juchan_backup\BCA_2017\BCA_2017_roll_number_method\BCA_2017_roll_number_method.gdb',
-            layer='ASSESSMENT_FABRIC')
+        gdf = gpd.read_file(self.directory+'BCA/BCA_2017_roll_number_method.gdb', layer='ASSESSMENT_FABRIC')
+        gdf.crs = {'init': 'epsg:3005'}
+        gdf.to_crs({'init': 'epsg:26910'}, inplace=True)
         s_index = gdf.sindex
         gdf = gpd.sjoin(gdf, self.boundary, op='within')
         gdf['JUROL'] = gdf['JUROL'].astype(str)
@@ -196,7 +220,8 @@ class City:
         df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
         df['JUROL'] = df['JUR'] + df['ROLL_NUM']
 
-        full_gdfs = {'0z': pd.merge(gdf, df, on='JUROL')}
+        merged = pd.merge(gdf, df, on='JUROL')
+        full_gdfs = {'0z': merged}
         print(': ' + str(len(full_gdfs['0z'])))
 
         for i in range(1, 7):
@@ -208,11 +233,12 @@ class City:
             df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
             full_gdf = pd.merge(gdf, df, on='JUROL')
             full_gdf.drop([string + 'z'], axis=1)
-            full_gdfs[str(i) + 'z'] = full_gdf
+            if len(full_gdf) > 0:
+                full_gdfs[str(i) + 'z'] = full_gdf
             print(string + ': ' + str(len(full_gdf)))
 
         # Merge and export spatial and non-spatial datasets
-        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True, axis=1)
+        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
         print(len(out_gdf))
 
         try:
@@ -358,7 +384,7 @@ class City:
                 buffers[radius].append(lda_buffer)
         for radius in service_areas:
             self.gdfs['_r' + str(radius) + 'm'] = gpd.GeoDataFrame(geometry=buffers[radius], crs=gdf.crs)
-            self.gdfs['_r' + str(radius) + 'm'].sindex()
+            sindex = self.gdfs['_r' + str(radius) + 'm'].sindex
         self.params = {'gdf': gdf, 'service_areas': service_areas}
         print(self.gdfs)
         print('Parameters set for ' + str(len(self.gdfs)) + ' spatial scales')
@@ -705,8 +731,6 @@ class City:
         r2 = gdf.corr(method='pearson')
         r2.to_csv(self.directory + self.municipality + '_r2.csv')
         print(r2)
-
-
 
 
 class Sandbox:
