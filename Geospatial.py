@@ -102,8 +102,8 @@ class City:
                 print('No network in database, downloading for ' + self.city_name)
                 network = ox.graph_from_place(self.municipality)
                 ox.save_graph_shapefile(network, 'osm', self.directory)
-                edges = gpd.read_file('osm/edges/edges.shp')
-                nodes = gpd.read_file('osm/nodes/nodes.shp')
+                edges = gpd.read_file(self.directory+'osm/edges/edges.shp')
+                nodes = gpd.read_file(self.directory+'osm/nodes/nodes.shp')
                 edges.crs = {'init': 'epsg:4326'}
                 edges.to_crs(crs='epsg:26910', inplace=True)
                 edges.to_file(self.gpkg, layer='network_streets', driver='GPKG')
@@ -458,7 +458,7 @@ class City:
                         lat = str(int(pt_gdf.geometry.y[0]))
                         filename = 'N' + lat + 'W' + lon + '.hgt'
                         # Extract elevation data from .hgt file and add it to dictionary
-                        elevation = self.elevation('Databases/Topography/' + filename,
+                        elevation = self.elevation(self.directory+'Topography/' + filename,
                                                    lon=pt_gdf.geometry.x[0], lat=pt_gdf.geometry.y[0])
                         elevations[key].append(elevation)
                         elevations[key].sort()
