@@ -3,7 +3,7 @@ from Geospatial import City
 
 # Process mobility related indicators for elementslab
 regions = {
-    # 'yvr': 'Metro Vancouver, British Columbia',
+    'yvr': 'Metro Vancouver, British Columbia',
     'yxs': 'Prince George, British Columbia',
     'yyj': 'Capital Regional District, British Columbia'
 }
