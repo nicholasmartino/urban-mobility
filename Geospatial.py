@@ -28,15 +28,16 @@ import os
 import time
 import timeit
 import warnings
+from shutil import copyfile, move
 
 import geopandas as gpd
 import numpy as np
 import osmnx as ox
 import pandas as pd
+from Statistics.basic_stats import shannon_div
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from shapely.geometry import Point
-from Statistics.basic_stats import shannon_div
 
 
 class City:
@@ -361,34 +362,6 @@ class City:
 
         return gdf
 
-    # Spatial analysis
-    def set_parameters(self, service_areas, unit='lda', samples=None):
-        # Buffer polygons for cross-scale data aggregation and output one GeoDataframe for each scale of analysis
-        if unit == 'lda':
-            gdf = self.LDAs
-        else:
-            gdf = None
-        if samples is not None:
-            gdf = gdf.sample(samples)
-            gdf.sindex()
-
-        self.gdfs = {'_' + unit: gdf}
-        buffers = {}
-        for radius in service_areas:
-            buffers[radius] = []
-        for row in gdf.iterrows():
-            geom = row[1].geometry
-            for radius in service_areas:
-                lda_buffer = geom.centroid.buffer(radius)
-                buffers[radius].append(lda_buffer)
-        for radius in service_areas:
-            self.gdfs['_r' + str(radius) + 'm'] = gpd.GeoDataFrame(geometry=buffers[radius], crs=gdf.crs)
-            sindex = self.gdfs['_r' + str(radius) + 'm'].sindex
-        self.params = {'gdf': gdf, 'service_areas': service_areas}
-        print(self.gdfs)
-        print('Parameters set for ' + str(len(self.gdfs)) + ' spatial scales')
-        return self.params
-
     def filter_networks(self):
         # Filter Open Street Map Networks into Walking, Cycling and Driving
         walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
@@ -420,6 +393,34 @@ class City:
             lon_row = int(round((lon - int(lon)) * (SAMPLES - 1), 0))
 
             return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
+
+    # Spatial analysis
+    def set_parameters(self, service_areas, unit='lda', samples=None):
+        # Buffer polygons for cross-scale data aggregation and output one GeoDataframe for each scale of analysis
+        if unit == 'lda':
+            gdf = self.LDAs
+        else:
+            gdf = None
+        if samples is not None:
+            gdf = gdf.sample(samples)
+            gdf.sindex()
+
+        self.gdfs = {'_' + unit: gdf}
+        buffers = {}
+        for radius in service_areas:
+            buffers[radius] = []
+        for row in gdf.iterrows():
+            geom = row[1].geometry
+            for radius in service_areas:
+                lda_buffer = geom.centroid.buffer(radius)
+                buffers[radius].append(lda_buffer)
+        for radius in service_areas:
+            self.gdfs['_r' + str(radius) + 'm'] = gpd.GeoDataFrame(geometry=buffers[radius], crs=gdf.crs)
+            sindex = self.gdfs['_r' + str(radius) + 'm'].sindex
+        self.params = {'gdf': gdf, 'service_areas': service_areas}
+        print(self.gdfs)
+        print('Parameters set for ' + str(len(self.gdfs)) + ' spatial scales')
+        return self.params
 
     def geomorph_indicators(self):
         # 'Topographical Unevenness'
@@ -478,6 +479,7 @@ class City:
             for key2, value2 in value.items():
                 gdf[key + key2] = value2
         print(gdf)
+        copyfile(self.gpkg, self.gpkg+'.bak')
         gdf.to_file(self.gpkg, layer='land_dissemination_area')
         return gdf
 
@@ -510,91 +512,14 @@ class City:
                 print(url)
                 driver.get(url)
         driver.close()
-
-        # Retail density
-        # Green space density
-        # Intersection density
-        # Cycling route density
-
-        # Land use diversity
-        # Parcel size diversity
-
-        # Topographic unevenness
-
-        # Space syntax indicators
-
         return None
 
-    def network_indicators(self, net_tolerance=10):
-        # Define GeoDataframe sample unit
-        gdf = self.params['gdf']
-        service_areas = self.params['service_areas']
-        dict_of_dicts = {}
-
-        # 'Intersection Density', 'Link-node Ratio', 'Network Density', 'Average Street Length'
-        try:
-            print([] + 'str')
-            # for radius in service_areas:
-            #     series1 = gdf.read_file(self.gpkg, layer='land_dissemination_area')['intrs_den_r'+str(radius)+'m']
-            #     series2 = gdf.read_file(self.gpkg, layer='land_dissemination_area')['linkn_rat'+str(radius)+'m']
-            #     series3 = gdf.read_file(self.gpkg, layer='land_dissemination_area')['netw_den' + str(radius) + 'm']
-            #     series4 = gdf.read_file(self.gpkg, layer='land_dissemination_area')['strt_len' + str(radius) + 'm']
-        except:
-            start_time = timeit.default_timer()
-            print('> Processing general network indicators')
-            intrs_den = {}
-            linkn_rat = {}
-            netw_den = {}
-            strt_len = {}
-            for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
-                intrs_den[key] = []
-                linkn_rat[key] = []
-                netw_den[key] = []
-                strt_len[key] = []
-                exceptions = []
-                for pol in geom.geometry:
-                    nodes_w = self.nodes[self.nodes.geometry.within(pol)]
-                    try:
-                        nodes_w = nodes_w.geometry.buffer(net_tolerance).unary_union
-                        len_nodes_w = len(nodes_w)
-                        if len(nodes_w) == 0:
-                            len_nodes_w = 1
-                    except:
-                        exceptions.append('exception')
-                        len_nodes_w = 1
-                    intrs_den[key].append(round(len_nodes_w / (pol.area / 10000), 2))
-                    edges_w = self.edges[self.edges.geometry.within(pol)]
-                    len_edges_w = len(edges_w)
-                    if len(edges_w) == 0:
-                        len_edges_w = 1
-                    edges_w_geom_length = edges_w.geometry.length
-                    if len(edges_w_geom_length) == 0:
-                        edges_w_geom_length = [1, 1]
-                    linkn_rat[key].append(round(len_edges_w / len_nodes_w, 2))
-                    netw_den[key].append(round(sum(edges_w_geom_length) / (pol.area / 10000), 5))
-                    strt_len[key].append(round(sum(edges_w_geom_length) / len(edges_w_geom_length), 2))
-                print('Network iterations at the ' + key + ' scale finished with a total of ' + str(
-                    len(exceptions)) + ' exceptions')
-            dict_of_dicts['intrs_den'] = intrs_den
-            dict_of_dicts['linkn_rat'] = linkn_rat
-            dict_of_dicts['netw_den'] = netw_den
-            dict_of_dicts['strt_len'] = strt_len
-            elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-            print('General network indicators processed in ' + str(elapsed) + ' minutes')
-
-        for key, value in dict_of_dicts.items():
-            for key2, value2 in value.items():
-                gdf[key + key2] = value2
-        gdf.to_file(self.gpkg, layer='land_dissemination_area')
-        print('Processing finished @ ' + str(datetime.datetime.now()))
-        return None
-
-    def network_gravity(self):
+    def density_indicators(self):
+        # Process 'Land Use Density', 'Parcel Density', 'Dwelling Density', 'Block Use Density'
         return self
 
     def diversity_indicators(self):
         # Process 'Land Use Diversity', 'Parcel Size Diversity', 'Dwelling Diversity', 'Block Use Mix Dissimilarity'
-
         gdf = self.params['gdf']
         service_areas = self.params['service_areas']
         dict_of_dicts = {}
@@ -701,16 +626,12 @@ class City:
 
             jgdf = gpd.sjoin(geom, self.parcels, op="within")
 
-
-
         gdf = self.params['gdf']
         service_areas = self.params['service_areas']
 
         # Create new columns in the GeoDataframe
         for radius in service_areas:
             print(gdf['use_div_' + str(radius)])
-
-
 
         # Append all processed data to a GeoDataframe
         for key, value in dict_of_dicts.items():
@@ -724,6 +645,124 @@ class City:
         print('General network indicators processed in ' + str(elapsed) + ' minutes')
 
         return
+
+    def street_network_indicators(self, net_tolerance=10):
+        # Define GeoDataframe sample unit
+        gdf = self.params['gdf']
+        service_areas = self.params['service_areas']
+        dict_of_dicts = {}
+
+        # 'Intersection Density', 'Link-node Ratio', 'Network Density', 'Average Street Length'
+        start_time = timeit.default_timer()
+        print('> Processing general network indicators')
+        intrs_den = {}
+        linkn_rat = {}
+        netw_den = {}
+        strt_len = {}
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
+            intrs_den[key] = []
+            linkn_rat[key] = []
+            netw_den[key] = []
+            strt_len[key] = []
+            exceptions = []
+            for pol in geom.geometry:
+                nodes_w = self.nodes[self.nodes.geometry.within(pol)]
+                try:
+                    nodes_w = nodes_w.geometry.buffer(net_tolerance).unary_union
+                    len_nodes_w = len(nodes_w)
+                    if len(nodes_w) == 0:
+                        len_nodes_w = 1
+                except:
+                    exceptions.append('exception')
+                    len_nodes_w = 1
+                intrs_den[key].append(round(len_nodes_w / (pol.area / 10000), 2))
+                edges_w = self.edges[self.edges.geometry.within(pol)]
+                len_edges_w = len(edges_w)
+                if len(edges_w) == 0:
+                    len_edges_w = 1
+                edges_w_geom_length = edges_w.geometry.length
+                if len(edges_w_geom_length) == 0:
+                    edges_w_geom_length = [1, 1]
+                linkn_rat[key].append(round(len_edges_w / len_nodes_w, 2))
+                netw_den[key].append(round(sum(edges_w_geom_length) / (pol.area / 10000), 5))
+                strt_len[key].append(round(sum(edges_w_geom_length) / len(edges_w_geom_length), 2))
+            print('Network iterations at the ' + key + ' scale finished with a total of ' + str(
+                len(exceptions)) + ' exceptions')
+        dict_of_dicts['intrs_den'] = intrs_den
+        dict_of_dicts['linkn_rat'] = linkn_rat
+        dict_of_dicts['netw_den'] = netw_den
+        dict_of_dicts['strt_len'] = strt_len
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        print('General network indicators processed in ' + str(elapsed) + ' minutes')
+
+        for key, value in dict_of_dicts.items():
+            for key2, value2 in value.items():
+                gdf[key + key2] = value2
+        copyfile(self.gpkg, self.gpkg+'.bak')
+        gdf.to_file(self.gpkg, layer='land_dissemination_area')
+        print('Processing finished @ ' + str(datetime.datetime.now()))
+        return None
+
+    def cycling_network_indicators(self):
+        # Read file and pre-process geometry according to its type
+        cycling_gdf = gpd.read_file(self.gpkg, layer='network_cycling')
+        if str(type(cycling_gdf.geometry[0])) != "<class 'shapely.geometry.polygon.Polygon'>":
+            print('> Geometry is not polygon, buffering')
+            cycling_gdf.geometry = cycling_gdf.buffer(40)
+
+        gdf = self.params['gdf']
+        if 'index_left' in gdf.columns:
+            gdf.drop(['index_left'], axis=1, inplace=True)
+        if 'index_right' in gdf.columns:
+            gdf.drop(['index_right'], axis=1, inplace=True)
+
+        dict_of_dicts = {}
+        start_time = timeit.default_timer()
+        print('> Processing cycling network indicators')
+
+        onstreet = {}
+        offstreet = {}
+        informal = {}
+        onstreet_gdf = cycling_gdf[cycling_gdf['type'] == 'onstreet']
+        offstreet_gdf = cycling_gdf[cycling_gdf['type'] == 'offstreet']
+        informal_gdf = cycling_gdf[cycling_gdf['type'] == 'informal']
+
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
+            onstreet[key] = []
+            offstreet[key] = []
+            informal[key] = []
+            for pol in geom.geometry:
+                onstreet_w = onstreet_gdf[onstreet_gdf.geometry.within(pol)]
+                offstreet_w = offstreet_gdf[offstreet_gdf.geometry.within(pol)]
+                informal_w = informal_gdf[informal_gdf.geometry.within(pol)]
+                if len(onstreet_w.geometry) == 0:
+                    onstreet[key].append(0)
+                else:
+                    onstreet[key].append(sum(onstreet_w.geometry.area))
+                if len(offstreet_w.geometry) == 0:
+                    offstreet[key].append(0)
+                else:
+                    offstreet[key].append(sum(offstreet_w.geometry.area))
+                if len(informal_w.geometry) == 0:
+                    informal[key].append(0)
+                else:
+                    informal[key].append(sum(informal_w.geometry.area))
+                print(onstreet)
+                print(offstreet)
+                print(informal)
+
+        dict_of_dicts['cycl_onstreet'] = onstreet
+        dict_of_dicts['cycl_offstreet'] = offstreet
+        dict_of_dicts['cycl_informal'] = informal
+
+        for key, value in dict_of_dicts.items():
+            for key2, value2 in value.items():
+                gdf[key + key2] = value2
+        copyfile(self.gpkg, self.directory+'Archive/'+self.municipality+' - '+str(datetime.date.today())+'.gpkg')
+        gdf.to_file(self.gpkg, layer='land_dissemination_area')
+
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        return print('Cycling network indicators processed in ' + str(elapsed) + ' minutes')
 
     def linear_correlation_lda(self):
         gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
