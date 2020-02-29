@@ -28,7 +28,7 @@ import os
 import time
 import timeit
 import warnings
-from shutil import copyfile, move
+from shutil import copyfile
 
 import geopandas as gpd
 import numpy as np
@@ -38,6 +38,7 @@ from Statistics.basic_stats import shannon_div
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from shapely.geometry import Point
+import skmob
 
 
 class City:
@@ -55,16 +56,13 @@ class City:
         try:
             self.edges = gpd.read_file(self.gpkg, layer='network_streets')
             self.nodes = gpd.read_file(self.gpkg, layer='network_intersections')
-        except:
-            pass
-        try:
-            self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
-        except:
-            pass
-        try:
-            self.LDAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
-        except:
-            pass
+        except: pass
+        try: self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+        except: print('land_municipal_boundary layer not read')
+        try: self.LDAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
+        except: print('land_dissemination_area layer not read')
+        try: self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
+        except: print('land_assessment_fabric layer not read')
         try:
             self.walking_net = gpd.read_file(self.gpkg, layer='network_streets_walking')
             self.cycling_net = gpd.read_file(self.gpkg, layer='network_streets_cycling')
@@ -78,6 +76,156 @@ class City:
         print('Class ' + self.city_name + ' created @ ' + str(datetime.datetime.now()))
 
     # Scrape and clean data
+
+    def aggregate_bca_from_field(self):
+        print('Aggregating BC Assessment from field')
+        inventory = self.directory+'BCA/Inventory Information - RY 2017.csv'
+        df = pd.read_csv(inventory)
+
+        # Load and process Roll Number field on both datasets
+        gdf = gpd.read_file(self.directory+'BCA/BCA_2017_roll_number_method.gdb', layer='ASSESSMENT_FABRIC')
+        gdf.crs = {'init': 'epsg:3005'}
+        gdf.to_crs({'init': 'epsg:26910'}, inplace=True)
+        s_index = gdf.sindex
+        gdf = gpd.sjoin(gdf, self.boundary, op='within')
+        gdf['JUROL'] = gdf['JUROL'].astype(str)
+        gdf = gdf[gdf.geometry.area > 71]
+        print('BCA spatial layer loaded with ' + str(len(gdf)) + ' parcels')
+        df['JUR'] = df['JUR'].astype(int).astype(str)
+        df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
+        df['JUROL'] = df['JUR'] + df['ROLL_NUM']
+
+        merged = pd.merge(gdf, df, on='JUROL')
+        full_gdfs = {'0z': merged}
+        print(': ' + str(len(full_gdfs['0z'])))
+
+        for i in range(1, 7):
+            strings = []
+            for n in range(i):
+                strings.append('0')
+            string = str(''.join(strings))
+            df[string + 'z'] = string
+            df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
+            full_gdf = pd.merge(gdf, df, on='JUROL')
+            full_gdf.drop([string + 'z'], axis=1)
+            if len(full_gdf) > 0:
+                full_gdfs[str(i) + 'z'] = full_gdf
+            print(string + ': ' + str(len(full_gdf)))
+
+        # Merge and export spatial and non-spatial datasets
+        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
+        print(len(out_gdf))
+
+        # Reclassify land uses for BC Assessment data
+        uses = {
+            'residential': ['000 - Single Family Dwelling', '030 - Strata-Lot Residence (Condominium)',
+                            '032 - Residential Dwelling with Suite',
+                            '033 - Duplex, Non-Strata Side by Side or Front / Back',
+                            '034 - Duplex, Non-Strata Up / Down', '035 - Duplex, Strata Side by Side',
+                            '036 - Duplex, Strata Front / Back', '039 - Row Housing (Single Unit Ownership)',
+                            '037 - Manufactured Home (Within Manufactured Home Park)',
+                            '038 - Manufactured Home (Not In Manufactured Home Park)',
+                            '040 - Seasonal Dwelling',
+                            '041 - Duplex, Strata Up / Down', '047 - Triplex', '049 - Fourplex',
+                            '050 - Multi-Family (Apartment Block)',
+                            '052 - Multi-Family (Garden Apartment & Row Housing)', '053 - Multi-Family (Conversion)',
+                            '054 - Multi-Family (High-Rise)', '055 - Multi-Family (Minimal Commercial)',
+                            '056 - Multi-Family (Residential Hotel)', '057 - Stratified Rental Townhouse',
+                            '058 - Stratified Rental Apartment (Frame Construction)',
+                            '059 - Stratified Rental Apartment (Hi-Rise Construction)',
+                            '060 - 2 Acres Or More (Single Family Dwelling, Duplex)', '285 - Seniors Licensed Care',
+                            '062 - 2 Acres Or More (Seasonal Dwelling)',
+                            '063 - 2 Acres Or More (Manufactured Home)',
+                            '234 - Manufactured Home Park',
+                            '286 - Seniors Independent & Assisted Living'],
+            'vacant': ['001 - Vacant Residential Less Than 2 Acres', '051 - Multi-Family (Vacant)',
+                       '061 - 2 Acres Or More (Vacant)', '201 - Vacant IC&I',
+                       '421 - Vacant', '422 - IC&I Water Lot (Vacant)',
+                       '601 - Civic, Institutional & Recreational (Vacant)'],
+            'parking': ['020 - Residential Outbuilding Only', '029 - Strata Lot (Parking Residential)',
+                        '043 - Parking (Lot Only, Paved Or Gravel-Res)', '219 - Strata Lot (Parking Commercial)',
+                        '260 - Parking (Lot Only, Paved Or Gravel-Com)', '262 - Parking Garage',
+                        '490 - Parking Lot Only (Paved Or Gravel)'],
+            'other': ['002 - Property Subject To Section 19(8)', '070 - 2 Acres Or More (Outbuilding)', '190 - Other',
+                      '200 - Store(S) And Service Commercial', '205 - Big Box', '216 - Commercial Strata-Lot',
+                      '220 - Automobile Dealership', '222 - Service Station', '224 - Self-Serve Service Station',
+                      '226 - Car Wash', '227 - Automobile Sales (Lot)', '228 - Automobile Paint Shop, Garages, Etc.',
+                      '230 - Hotel', '232 - Motel & Auto Court', '233 - Individual Strata Lot (Hotel/Motel)',
+                      '237 - Bed & Breakfast Operation 4 Or More Units',
+                      '239 - Bed & Breakfast Operation Less Than 4 Units',
+                      '240 - Greenhouses And Nurseries (Not Farm Class)', '257 - Fast Food Restaurants',
+                      '258 - Drive-In Restaurant', '288 - Sign Or Billboard Only'],
+            'retail': ['202 - Store(S) And Living Quarters', '209 - Shopping Centre (Neighbourhood)',
+                       '211 - Shopping Centre (Community)', '212 - Department Store - Stand Alone',
+                       '213 - Shopping Centre (Regional)', '214 - Retail Strip', '215 - Food Market',
+                       '225 - Convenience Store/Service Station'],
+            'entertainment': ['236 - Campground (Commercial)', '250 - Theatre Buildings',
+                              '254 - Neighbourhood Pub', '256 - Restaurant Only',
+                              '266 - Bowling Alley', '270 - Hall (Community, Lodge, Club, Etc.)',
+                              '280 - Marine Facilities (Marina)',
+                              '600 - Recreational & Cultural Buildings (Includes Curling',
+                              '610 - Parks & Playing Fields', '612 - Golf Courses (Includes Public & Private)',
+                              '654 - Recreational Clubs, Ski Hills',
+                              '660 - Land Classified Recreational Used For'],
+            'institutional': ['210 - Bank', '620 - Government Buildings (Includes Courthouse, Post Office',
+                              '625 - Garbage Dumps, Sanitary Fills, Sewer Lagoons, Etc.', '630 - Works Yards',
+                              '634 - Government Research Centres (Includes Nurseries &',
+                              '640 - Hospitals (Nursing Homes Refer To Commercial Section).',
+                              '642 - Cemeteries (Includes Public Or Private).',
+                              '650 - Schools & Universities, College Or Technical Schools',
+                              '652 - Churches & Bible Schools'],
+            'agriculture': ['110 - Grain & Forage', '120 - Vegetable & Truck',
+                            '150 - Beef', '170 - Poultry', '180 - Mixed'],
+            'office': ['203 - Stores And/Or Offices With Apartments', '204 - Store(S) And Offices',
+                       '208 - Office Building (Primary Use)'],
+            'industrial': ['217 - Air Space Title', '272 - Storage & Warehousing (Open)',
+                           '273 - Storage & Warehousing (Closed)', '274 - Storage & Warehousing (Cold)',
+                           '275 - Self Storage', '276 - Lumber Yard Or Building Supplies', '400 - Fruit & Vegetable',
+                           '401 - Industrial (Vacant)', '402 - Meat & Poultry', '403 - Sea Food',
+                           '404 - Dairy Products', '405 - Bakery & Biscuit Manufacturing',
+                           '406 - Confectionery Manufacturing & Sugar Processing', '408 - Brewery',
+                           '414 - Miscellaneous (Food Processing)',
+                           '416 - Planer Mills (When Separate From Sawmill)',
+                           '419 - Sash & Door',
+                           '420 - Lumber Remanufacturing (When Separate From Sawmill)',
+                           '423 - IC&I Water Lot (Improved)',
+                           '424 - Pulp & Paper Mills (Incl Fine Paper, Tissue & Asphalt Roof)',
+                           '425 - Paper Box, Paper Bag, And Other Paper Remanufacturing.', '428 - Improved',
+                           '429 - Miscellaneous (Forest And Allied Industry)',
+                           '434 - Petroleum Bulk Plants',
+                           '445 - Sand & Gravel (Vacant and Improved)',
+                           '447 - Asphalt Plants',
+                           '448 - Concrete Mixing Plants',
+                           '449 - Miscellaneous (Mining And Allied Industries)', '452 - Leather Industry',
+                           '454 - Textiles & Knitting Mills', '456 - Clothing Industry',
+                           '458 - Furniture & Fixtures Industry', '460 - Printing & Publishing Industry',
+                           '462 - Primary Metal Industries (Iron & Steel Mills,', '464 - Metal Fabricating Industries',
+                           '466 - Machinery Manufacturing (Excluding Electrical)',
+                           '470 - Electrical & Electronics Products Industry',
+                           '472 - Chemical & Chemical Products Industries', '474 - Miscellaneous & (Industrial Other)',
+                           '476 - Grain Elevators', '478 - Docks & Wharves', '500 - Railway',
+                           '505 - Marine & Navigational Facilities (Includes Ferry',
+                           '510 - Bus Company, Including Street Railway', '520 - Telephone',
+                           '530 - Telecommunications (Other Than Telephone)',
+                           '550 - Gas Distribution Systems',
+                           '560 - Water Distribution Systems',
+                           '580 - Electrical Power Systems (Including Non-Utility']
+        }
+
+        new_uses = []
+        index = list(out_gdf.columns).index("PRIMARY_ACTUAL_USE")
+        all_prim_uses = [item for sublist in list(uses.values()) for item in sublist]
+        for row in out_gdf.iterrows():
+            for key, value in uses.items():
+                if row[1]['PRIMARY_ACTUAL_USE'] in value:
+                    new_uses.append(key)
+            if row[1]['PRIMARY_ACTUAL_USE'] not in all_prim_uses:
+                new_uses.append(row[1]['PRIMARY_ACTUAL_USE'])
+        out_gdf['elab_use'] = new_uses
+
+        out_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_fabric')
+        return out_gdf
+
     def check_file_databases(self, bound=True, net=True, census=True, bcaa=True, icbc=True):
         # Check if boundary data exists and download it from OSM if not
         if bound:
@@ -128,6 +276,16 @@ class City:
                 census_lda.crs = {'init': 'epsg:4326'}
                 census_lda.to_crs({'init': 'epsg:26910'}, inplace=True)
                 self.LDAs = gpd.sjoin(census_lda, self.boundary)
+
+                # Calculate population density
+                fields = ['Car; truck; van - as a driver', 'Car; truck; van - as a passenger',
+                          'Public transit', 'Walked', 'Bicycle', 'Other method']
+                fgdf = gpd.GeoDataFrame()
+                for field in fields:
+                    fgdf[field] = self.LDAs[field].astype('float')
+                self.LDAs['pop'] = fgdf.sum(axis=1, skipna=True)
+                self.LDAs['pop_den'] = self.LDAs['pop'] / (self.LDAs.geometry.area * 10000)
+
                 self.LDAs.to_file(self.gpkg, layer='land_dissemination_area')
                 print('Census dissemination area joined for ' + self.city_name)
 
@@ -137,17 +295,17 @@ class City:
                 self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
                 print(self.city_name + ' BC Assessment data read from database')
             except:
-                # Spatial join with spatial index BC Assessment data
+                # # Spatial join with spatial index BC Assessment data
                 start_time = time.time()
-                gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
-                print("BC Assessment data read in %s minutes" % str(
-                    round((time.time() - start_time) / 60, 2)))
-                start_time = time.time()
-                matches = gpd.sjoin(gdf, self.boundary, op='within')
-                matches.to_file(self.gpkg, layer='land_assessment_fabric')
+                # gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
+                # print("BC Assessment data read in %s minutes" % str(
+                #     round((time.time() - start_time) / 60, 2)))
+                # start_time = time.time()
+                # matches = gpd.sjoin(gdf, self.boundary, op='within')
+                # matches.to_file(self.gpkg, layer='land_assessment_fabric')
+                self.parcels = self.aggregate_bca_from_field()
                 print("Spatial join and export for " + self.city_name + " performed in %s minutes " % str(
                     round((time.time() - start_time) / 60, 2)))
-                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
 
         # Check if ICBC crash data exists and join it from ICBC database if not
         if icbc:
@@ -165,90 +323,8 @@ class City:
                 matches = gpd.sjoin(gdf, self.boundary, op='within')
                 matches.to_file(self.gpkg, layer='network_accidents', driver='GPKG')
 
-    def aggregate_bca_from_field(self):
-        # filepath = 'Databases/BCA/BC Assessment.csv'
-        # try: df = pd.read_csv(filepath)
-        # except:
-        #     # Group data by Property ID
-        #     inventory = r'..\Geospatial\Databases\BCA\Inventory Information - RY 2017.csv'
-        #     df = pd.read_csv(inventory, engine='python')
-        #     df.fillna(0, inplace=True)
-        #     df = df.groupby('ROLL_NUM').agg({
-        #         'AREA': 'mean',
-        #         'JUR': 'first',
-        #         'PID': 'first',
-        #         'PROPERTY_TYPE': 'first',
-        #         'PRIMARY_ACTUAL_USE': 'first',
-        #         'PROPERTY_ADDRESS': 'first',
-        #         'LEGAL_DESCRIPTION': 'first',
-        #         'LAND_TYPE_NAME': 'first',
-        #         'LAND_SIZE': 'mean',
-        #         'LAND_DEPTH': 'mean',
-        #         'ACTUAL_TOTAL': 'mean',
-        #         'ACTUAL_LAND': 'mean',
-        #         'ACTUAL_IMPR': 'mean',
-        #         'REGIONAL_DISTRICT': 'first',
-        #         'BLDG_COUNT': 'mean',
-        #         'YEAR_BUILT': 'mean',
-        #         'TOTAL_FINISHED_AREA': 'mean',
-        #         'NUMBER_OF_BATHROOMS': 'sum',
-        #         'NUMBER_OF_BEDROOMS': 'sum',
-        #         'STRATA_UNIT_AREA': 'mean',
-        #         'PREDOMINANT_OCCUPANCY': 'first',
-        #         'NUMBER_OF_STOREYS': 'mean',
-        #         'GROSS_BUILDING_AREA': 'mean',
-        #         'GROSS_LEASABLE_AREA': 'mean',
-        #         'NET_LEASABLE_AREA': 'mean'
-        #     })
-        #     df.to_csv(filepath)
-        #     df = pd.read_csv(filepath)
-        # print('BCA csv layer loaded with '+str(len(df))+' rows')
-
-        inventory = self.directory+'BCA/Inventory Information - RY 2017.csv'
-        df = pd.read_csv(inventory)
-
-        # Load and process Roll Number field on both datasets
-        gdf = gpd.read_file(self.directory+'BCA/BCA_2017_roll_number_method.gdb', layer='ASSESSMENT_FABRIC')
-        gdf.crs = {'init': 'epsg:3005'}
-        gdf.to_crs({'init': 'epsg:26910'}, inplace=True)
-        s_index = gdf.sindex
-        gdf = gpd.sjoin(gdf, self.boundary, op='within')
-        gdf['JUROL'] = gdf['JUROL'].astype(str)
-        gdf = gdf[gdf.geometry.area > 71]
-        print('BCA spatial layer loaded with ' + str(len(gdf)) + ' parcels')
-        df['JUR'] = df['JUR'].astype(int).astype(str)
-        df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
-        df['JUROL'] = df['JUR'] + df['ROLL_NUM']
-
-        merged = pd.merge(gdf, df, on='JUROL')
-        full_gdfs = {'0z': merged}
-        print(': ' + str(len(full_gdfs['0z'])))
-
-        for i in range(1, 7):
-            strings = []
-            for n in range(i):
-                strings.append('0')
-            string = str(''.join(strings))
-            df[string + 'z'] = string
-            df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
-            full_gdf = pd.merge(gdf, df, on='JUROL')
-            full_gdf.drop([string + 'z'], axis=1)
-            if len(full_gdf) > 0:
-                full_gdfs[str(i) + 'z'] = full_gdf
-            print(string + ': ' + str(len(full_gdf)))
-
-        # Merge and export spatial and non-spatial datasets
-        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
-        print(len(out_gdf))
-
-        try:
-            with open(self.directory+'BC_Assessment_unjoined.csv', 'w') as file:
-                file.write([set(out_gdf['JUROL']).symmetric_difference(gdf['JUROL'])].sort())
-        except: pass
-        out_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_fabric')
-        return out_gdf
-
     def aggregate_bca_from_location(self):
+        # WIP
         gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
         centroids = []
         for geom in gdf.geometry:
@@ -284,84 +360,6 @@ class City:
         gdf = gpd.GeoDataFrame(df, geometry='geometry', crs={'init': 'epsg:3005'})
         gdf.to_file(self.assessment, layer='land_assessment_fabric_agg', driver='GPKG')
 
-    def get_census_mobility(self):
-        filepath = r'Census\98-400-X2016328_English_CSV_data.csv'
-
-        with open(filepath) as file:
-            df = pd.read_csv(file)
-            # Drop some useless columns
-            to_drop = ['ï»¿"CENSUS_YEAR"',
-                       'GEO_LEVEL',
-                       'GEO_NAME',
-                       'GNR',
-                       'DATA_QUALITY_FLAG',
-                       'CSD_TYPE_NAME',
-                       'ALT_GEO_CODE',
-                       'Member ID: Commuting duration (6)',
-                       'Notes: Commuting duration (6)',
-                       'Member ID: Time leaving for work (7)',
-                       'Notes: Time leaving for work (7)',
-                       'Member ID: Main mode of commuting (10)',
-                       'Notes: Main mode of commuting (10)',
-                       'Dim: Distance from home to work (12): Member ID: [1]: Total - Distance from home to work (Note: 2)']
-            for col in to_drop:
-                try:
-                    df.drop(col, axis=1, inplace=True)
-                    print(col + ' dropped')
-                except:
-                    print('drop failed')
-
-            # Drop some useless rows
-            to_drop = ['2 or more persons shared the ride to work',
-                       'Driver, alone',
-                       'Driver, with 1 or more passengers',
-                       'Other method',
-                       'Passenger, 2 or more persons in the vehicle',
-                       'Sustainable transportation']
-            df = df[df['DIM: Commuting duration (6)'] == 'Total - Commuting duration']
-            df = df[df['DIM: Time leaving for work (7)'] == 'Total - Time leaving for work']
-            df = df[df['DIM: Main mode of commuting (10)'] != 'Total - Main mode of commuting']
-            for i in to_drop:
-                df = df[df['DIM: Main mode of commuting (10)'] != i]
-
-            # Group data and export
-            df = df.groupby(['GEO_CODE (POR)', 'DIM: Main mode of commuting (10)']).sum().transpose().stack()
-            df = df.transpose().reset_index()
-            new_col = []
-            for tup in df.columns:
-                new_col.append(tup[0] + '_' + tup[1])
-            df.columns = new_col
-            df.rename(columns={'GEO_CODE (POR)_': 'GEO_CODE'}, inplace=True)
-            df['GEO_CODE'] = pd.to_numeric(df['GEO_CODE'])
-            df.to_csv(path_or_buf=filepath + '_filtered.csv')
-
-            # Merge df with Census Subdivision boundary file
-            gdf = gpd.read_file('Census/lcsd000b16a_e.shp')
-            gdf = gdf[gdf['CSDNAME'] == self.city_name]
-            gdf.rename(columns={'CSDUID': 'GEO_CODE'}, inplace=True)
-            gdf['GEO_CODE'] = pd.to_numeric(gdf['GEO_CODE'])
-            df = pd.merge(df, gdf, on='GEO_CODE', how='inner')
-            gdf = gpd.GeoDataFrame(df, geometry='geometry')
-            gdf.crs = {'init': 'epsg:3348'}
-
-            # Calculate active transport 'market share'
-            at_cols = []
-            mid_cols = []
-            for i in gdf.columns:
-                if 'Active transport' in i:
-                    at_cols.append(i)
-                if 'Member ID' in i:
-                    mid_cols.append(i)
-            gdf['active_transport'] = gdf[at_cols].sum(axis=1) / gdf[mid_cols].sum(axis=1)
-            try:
-                gdf.to_file(self.gpkg, layer='land_census_subdivision', driver='GPKG')
-                print(gdf)
-                print('Census data from ' + self.city_name + ' processed and uploaded :)')
-            except:
-                print('Failed to upload census ')
-
-        return gdf
-
     def filter_networks(self):
         # Filter Open Street Map Networks into Walking, Cycling and Driving
         walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
@@ -395,10 +393,10 @@ class City:
             return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
 
     # Spatial analysis
-    def set_parameters(self, service_areas, unit='lda', samples=None):
+    def set_parameters(self, service_areas, unit='lda', samples=None, max_area=7000000):
         # Buffer polygons for cross-scale data aggregation and output one GeoDataframe for each scale of analysis
         if unit == 'lda':
-            gdf = self.LDAs
+            gdf = self.LDAs.loc[self.LDAs.geometry.area < max_area]
         else:
             gdf = None
         if samples is not None:
@@ -484,6 +482,7 @@ class City:
         return gdf
 
     def demographic_indicators(self, unit='lda'):
+        # WIP
         census_gdf = gpd.read_file(self.census_file)
         bound_gdf = gpd.read_file(self.gpkg, layer='land_census_subdivision')
         bound_gdf.crs = {'init': 'epsg:3348'}
@@ -515,11 +514,95 @@ class City:
         return None
 
     def density_indicators(self):
-        # Process 'Land Use Density', 'Parcel Density', 'Dwelling Density', 'Block Use Density'
-        return self
+        # Process 'Parcel Density', 'Dwelling Density', 'Bedroom Density', 'Bathroom Density', 'Retail Density'
+        gdf = self.params['gdf']
+        dict_of_dicts = {}
+
+        print('> Processing spatial density indicators')
+        start_time = timeit.default_timer()
+
+        # Drop index columns from previous processing
+        if 'index_right' in self.parcels.columns:
+            self.parcels.drop('index_right', axis=1, inplace=True)
+        if 'index_left' in self.parcels.columns:
+            self.parcels.drop('index_left', axis=1, inplace=True)
+
+        # Create empty dictionaries and lists
+        parc_den = {}
+        dwell_den = {}
+        bed_den = {}
+        bath_den = {}
+        dest_den = {}
+        dest_ct = {}
+        dwell_ct = {}
+
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
+            parc_den[key] = []
+            dwell_den[key] = []
+            bed_den[key] = []
+            bath_den[key] = []
+            dest_den[key] = []
+            dest_ct[key] = []
+            dwell_ct[key] = []
+
+        # Iterate over GeoDataFrames
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
+
+            if 'index_right' in geom.columns:
+                geom.drop('index_right', axis=1, inplace=True)
+            if 'index_left' in geom.columns:
+                geom.drop('index_left', axis=1, inplace=True)
+
+            jgdf = gpd.sjoin(geom, self.parcels, how='right', op="intersects")
+            for id in range(len(gdf)):
+                fgdf = jgdf.loc[(jgdf['index_left'] == id)]
+                if len(fgdf) == 0:
+                    parc_den[key].append(0)
+                    dwell_den[key].append(0)
+                    bed_den[key].append(0)
+                    bath_den[key].append(0)
+                    dest_den[key].append(0)
+                    dwell_ct[key].append(0)
+                    dest_ct[key].append(0)
+
+                else:
+                    area = geom.loc[id].geometry.area
+
+                    parc_gdf = fgdf.drop_duplicates(subset='geometry')
+                    parc_den[key].append(len(parc_gdf)/area)
+
+                    dwell_gdf = fgdf.loc[fgdf['elab_use'] == 'residential']
+                    dwell_den[key].append(len(dwell_gdf)/area)
+                    dwell_ct[key].append(len(dwell_gdf))
+
+                    bed_den[key].append(dwell_gdf['NUMBER_OF_BEDROOMS'].sum()/area)
+                    bath_den[key].append(fgdf['NUMBER_OF_BATHROOMS'].sum()/area)
+
+                    dest_gdf = fgdf.loc[(fgdf['elab_use'] == 'retail') |
+                                        (fgdf['elab_use'] == 'office') |
+                                        (fgdf['elab_use'] == 'entertainment')]
+                    dest_den[key].append(len(dest_gdf)/area)
+                    dest_ct[key].append(len(dest_gdf))
+
+        dict_of_dicts['parc_den'] = parc_den
+        dict_of_dicts['dwell_ct'] = dwell_ct
+        dict_of_dicts['dwell_den'] = dwell_den
+        dict_of_dicts['bed_den'] = bed_den
+        dict_of_dicts['bath_den'] = bath_den
+        dict_of_dicts['dest_ct'] = dest_ct
+        dict_of_dicts['dest_den'] = dest_den
+
+        # Append all processed data to a single GeoDataFrame, backup and export
+        for key, value in dict_of_dicts.items():
+            for key2, value2 in value.items():
+                gdf[key + key2] = value2
+        copyfile(self.gpkg, self.directory+'Archive/'+self.municipality+' - '+str(datetime.date.today())+'.gpkg')
+        gdf.to_file(self.gpkg, layer='land_dissemination_area')
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        return print('Density indicators processed in ' + str(elapsed) + ' minutes @ ' + str(datetime.datetime.now()))
 
     def diversity_indicators(self):
-        # Process 'Land Use Diversity', 'Parcel Size Diversity', 'Dwelling Diversity', 'Block Use Mix Dissimilarity'
+        # Process 'Land Use Diversity', 'Parcel Size Diversity', 'Dwelling Diversity'
         gdf = self.params['gdf']
         service_areas = self.params['service_areas']
         dict_of_dicts = {}
@@ -527,124 +610,69 @@ class City:
         print('> Processing spatial diversity indicators')
         start_time = timeit.default_timer()
 
-        # Reclassify land uses for BC Assessment data
-        uses = {
-            'residential': ['000 - Single Family Dwelling', '030 - Strata-Lot Residence (Condominium)',
-                            '032 - Residential Dwelling with Suite',
-                            '033 - Duplex, Non-Strata Side by Side or Front / Back',
-                            '034 - Duplex, Non-Strata Up / Down', '035 - Duplex, Strata Side by Side',
-                            '036 - Duplex, Strata Front / Back', '039 - Row Housing (Single Unit Ownership)',
-                            '041 - Duplex, Strata Up / Down', '047 - Triplex', '050 - Multi-Family (Apartment Block)',
-                            '052 - Multi-Family (Garden Apartment & Row Housing)', '053 - Multi-Family (Conversion)',
-                            '054 - Multi-Family (High-Rise)', '055 - Multi-Family (Minimal Commercial)',
-                            '056 - Multi-Family (Residential Hotel)', '057 - Stratified Rental Townhouse',
-                            '058 - Stratified Rental Apartment (Frame Construction)',
-                            '059 - Stratified Rental Apartment (Hi-Rise Construction)',
-                            '060 - 2 Acres Or More (Single Family Dwelling, Duplex)', '285 - Seniors Licensed Care',
-                            '286 - Seniors Independent & Assisted Living'],
-            'vacant': ['001 - Vacant Residential Less Than 2 Acres', '051 - Multi-Family (Vacant)', '201 - Vacant IC&I',
-                       '421 - Vacant', '422 - IC&I Water Lot (Vacant)',
-                       '601 - Civic, Institutional & Recreational (Vacant)'],
-            'parking': ['020 - Residential Outbuilding Only', '029 - Strata Lot (Parking Residential)',
-                        '043 - Parking (Lot Only, Paved Or Gravel-Res)', '219 - Strata Lot (Parking Commercial)',
-                        '260 - Parking (Lot Only, Paved Or Gravel-Com)', '262 - Parking Garage',
-                        '490 - Parking Lot Only (Paved Or Gravel)'],
-            'other': ['002 - Property Subject To Section 19(8)', '070 - 2 Acres Or More (Outbuilding)', '190 - Other',
-                      '200 - Store(S) And Service Commercial', '205 - Big Box', '216 - Commercial Strata-Lot',
-                      '220 - Automobile Dealership', '222 - Service Station', '224 - Self-Serve Service Station',
-                      '226 - Car Wash', '227 - Automobile Sales (Lot)', '228 - Automobile Paint Shop, Garages, Etc.',
-                      '230 - Hotel', '232 - Motel & Auto Court', '233 - Individual Strata Lot (Hotel/Motel)',
-                      '237 - Bed & Breakfast Operation 4 Or More Units',
-                      '239 - Bed & Breakfast Operation Less Than 4 Units',
-                      '240 - Greenhouses And Nurseries (Not Farm Class)', '257 - Fast Food Restaurants',
-                      '258 - Drive-In Restaurant', '288 - Sign Or Billboard Only'],
-            'retail': ['202 - Store(S) And Living Quarters', '209 - Shopping Centre (Neighbourhood)',
-                       '211 - Shopping Centre (Community)', '212 - Department Store - Stand Alone',
-                       '213 - Shopping Centre (Regional)', '214 - Retail Strip', '215 - Food Market',
-                       '225 - Convenience Store/Service Station'],
-            'entertainment': ['250 - Theatre Buildings', '254 - Neighbourhood Pub', '256 - Restaurant Only',
-                              '266 - Bowling Alley', '270 - Hall (Community, Lodge, Club, Etc.)',
-                              '280 - Marine Facilities (Marina)',
-                              '600 - Recreational & Cultural Buildings (Includes Curling',
-                              '610 - Parks & Playing Fields', '612 - Golf Courses (Includes Public & Private)',
-                              '654 - Recreational Clubs, Ski Hills'],
-            'institutional': ['210 - Bank', '620 - Government Buildings (Includes Courthouse, Post Office',
-                              '625 - Garbage Dumps, Sanitary Fills, Sewer Lagoons, Etc.', '630 - Works Yards',
-                              '634 - Government Research Centres (Includes Nurseries &',
-                              '640 - Hospitals (Nursing Homes Refer To Commercial Section).',
-                              '642 - Cemeteries (Includes Public Or Private).',
-                              '650 - Schools & Universities, College Or Technical Schools',
-                              '652 - Churches & Bible Schools'],
-            'agriculture': ['120 - Vegetable & Truck', '170 - Poultry', '180 - Mixed'],
-            'office': ['203 - Stores And/Or Offices With Apartments', '204 - Store(S) And Offices',
-                       '208 - Office Building (Primary Use)'],
-            'industrial': ['217 - Air Space Title', '272 - Storage & Warehousing (Open)',
-                           '273 - Storage & Warehousing (Closed)', '274 - Storage & Warehousing (Cold)',
-                           '275 - Self Storage', '276 - Lumber Yard Or Building Supplies', '400 - Fruit & Vegetable',
-                           '401 - Industrial (Vacant)', '402 - Meat & Poultry', '403 - Sea Food',
-                           '404 - Dairy Products', '405 - Bakery & Biscuit Manufacturing',
-                           '406 - Confectionery Manufacturing & Sugar Processing', '408 - Brewery',
-                           '414 - Miscellaneous (Food Processing)', '419 - Sash & Door',
-                           '423 - IC&I Water Lot (Improved)',
-                           '425 - Paper Box, Paper Bag, And Other Paper Remanufacturing.', '428 - Improved',
-                           '429 - Miscellaneous (Forest And Allied Industry)',
-                           '449 - Miscellaneous (Mining And Allied Industries)', '452 - Leather Industry',
-                           '454 - Textiles & Knitting Mills', '456 - Clothing Industry',
-                           '458 - Furniture & Fixtures Industry', '460 - Printing & Publishing Industry',
-                           '462 - Primary Metal Industries (Iron & Steel Mills,', '464 - Metal Fabricating Industries',
-                           '466 - Machinery Manufacturing (Excluding Electrical)',
-                           '470 - Electrical & Electronics Products Industry',
-                           '472 - Chemical & Chemical Products Industries', '474 - Miscellaneous & (Industrial Other)',
-                           '476 - Grain Elevators', '478 - Docks & Wharves', '500 - Railway',
-                           '505 - Marine & Navigational Facilities (Includes Ferry',
-                           '510 - Bus Company, Including Street Railway', '520 - Telephone',
-                           '530 - Telecommunications (Other Than Telephone)', '560 - Water Distribution Systems',
-                           '580 - Electrical Power Systems (Including Non-Utility']
-        }
+        # Drop index columns from previous processing
+        if 'index_right' in self.parcels.columns:
+            self.parcels.drop('index_right', axis=1, inplace=True)
+        if 'index_left' in self.parcels.columns:
+            self.parcels.drop('index_left', axis=1, inplace=True)
 
-        new_uses = []
-        print(self.parcels.columns)
-        for row in self.parcels.iterrows():
-            print(row)
-            for key in uses.keys():
-                for prim_use in uses[key]:
-                    if self.parcels.iloc[row, 'PRIMARY ACTUAL USE'] == prim_use:
-                        new_uses.append(key)
-        self.parcels['elab_use'] = new_uses
-        print(self.parcels.elab_use)
-
-        # Process diversity indicators
+        # Create empty dictionaries and lists
         use_div = {}
         dwell_div = {}
         parc_area_div = {}
-        blck_area_div = {}
         for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
             use_div[key] = []
             dwell_div[key] = []
             parc_area_div[key] = []
-            blck_area_div[key] = []
 
-            jgdf = gpd.sjoin(geom, self.parcels, op="within")
+        # Iterate over GeoDataFrames
+        for geom, key in zip(self.gdfs.values(), self.gdfs.keys()):
 
-        gdf = self.params['gdf']
-        service_areas = self.params['service_areas']
+            if 'index_right' in geom.columns:
+                geom.drop('index_right', axis=1, inplace=True)
+            if 'index_left' in geom.columns:
+                geom.drop('index_left', axis=1, inplace=True)
 
-        # Create new columns in the GeoDataframe
-        for radius in service_areas:
-            print(gdf['use_div_' + str(radius)])
+            jgdf = gpd.sjoin(geom, self.parcels, how='right', op="intersects")
+            for id in range(len(gdf)):
+                fgdf = jgdf.loc[(jgdf['index_left'] == id)]
+                if len(fgdf) == 0:
+                    use_div[key].append(0)
+                    dwell_div[key].append(0)
+                    parc_area_div[key].append(0)
+                else:
+                    use_gdf = fgdf.loc[(fgdf['elab_use'] == 'residential') |
+                                       (fgdf['elab_use'] == 'entertainment') |
+                                       (fgdf['elab_use'] == 'institutional') |
+                                       (fgdf['elab_use'] == 'retail') |
+                                       (fgdf['elab_use'] == 'office')]
+                    use_div[key].append(shannon_div(use_gdf, 'elab_use'))
 
-        # Append all processed data to a GeoDataframe
+                    res_gdf = fgdf.loc[(fgdf['elab_use'] == 'residential')]
+                    dwell_div[key].append(shannon_div(res_gdf, 'PRIMARY_ACTUAL_USE'))
+
+                    parcel_gdf = fgdf.drop_duplicates(subset=['geometry'])
+                    parcel_gdf['area'] = parcel_gdf.geometry.area
+                    parcel_gdf.loc[parcel_gdf['area'] < 400, 'area_group'] = '<400'
+                    parcel_gdf.loc[(parcel_gdf['area'] > 400) & (parcel_gdf['area'] < 800), 'area_group'] = '400><800'
+                    parcel_gdf.loc[(parcel_gdf['area'] > 800) & (parcel_gdf['area'] < 1600), 'area_group'] = '800><1600'
+                    parcel_gdf.loc[(parcel_gdf['area'] > 1600) & (parcel_gdf['area'] < 3200), 'area_group'] = '1600><3200'
+                    parcel_gdf.loc[(parcel_gdf['area'] > 3200) & (parcel_gdf['area'] < 6400), 'area_group'] = '3200><6400'
+                    parcel_gdf.loc[parcel_gdf['area'] > 6400, 'area_group'] = '>6400'
+                    parc_area_div[key].append(shannon_div(parcel_gdf, 'area_group'))
+
+        dict_of_dicts['use_div'] = use_div
+        dict_of_dicts['dwell_div'] = dwell_div
+        dict_of_dicts['parc_area_div'] = parc_area_div
+
+        # Append all processed data to a single GeoDataFrame, backup and export
         for key, value in dict_of_dicts.items():
             for key2, value2 in value.items():
                 gdf[key + key2] = value2
-        print(gdf)
+        copyfile(self.gpkg, self.directory+'Archive/'+self.municipality+' - '+str(datetime.date.today())+'.gpkg')
         gdf.to_file(self.gpkg, layer='land_dissemination_area')
-        print('Processing finished @ ' + str(datetime.datetime.now()))
-
         elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-        print('General network indicators processed in ' + str(elapsed) + ' minutes')
-
-        return
+        return print('Diversity indicators processed in ' + str(elapsed) + ' minutes @ ' + str(datetime.datetime.now()))
 
     def street_network_indicators(self, net_tolerance=10):
         # Define GeoDataframe sample unit
@@ -723,6 +751,7 @@ class City:
         onstreet = {}
         offstreet = {}
         informal = {}
+        all_cycl = {}
         onstreet_gdf = cycling_gdf[cycling_gdf['type'] == 'onstreet']
         offstreet_gdf = cycling_gdf[cycling_gdf['type'] == 'offstreet']
         informal_gdf = cycling_gdf[cycling_gdf['type'] == 'informal']
@@ -731,29 +760,29 @@ class City:
             onstreet[key] = []
             offstreet[key] = []
             informal[key] = []
+            all_cycl[key] = []
             for pol in geom.geometry:
                 onstreet_w = onstreet_gdf[onstreet_gdf.geometry.within(pol)]
                 offstreet_w = offstreet_gdf[offstreet_gdf.geometry.within(pol)]
                 informal_w = informal_gdf[informal_gdf.geometry.within(pol)]
-                if len(onstreet_w.geometry) == 0:
-                    onstreet[key].append(0)
-                else:
-                    onstreet[key].append(sum(onstreet_w.geometry.area))
-                if len(offstreet_w.geometry) == 0:
-                    offstreet[key].append(0)
-                else:
-                    offstreet[key].append(sum(offstreet_w.geometry.area))
-                if len(informal_w.geometry) == 0:
-                    informal[key].append(0)
-                else:
-                    informal[key].append(sum(informal_w.geometry.area))
+                all_cycl_w = gdf[gdf.geometry.within(pol)]
+                if len(onstreet_w.geometry) == 0: onstreet[key].append(0)
+                else: onstreet[key].append(sum(onstreet_w.geometry.area))
+                if len(offstreet_w.geometry) == 0: offstreet[key].append(0)
+                else: offstreet[key].append(sum(offstreet_w.geometry.area))
+                if len(informal_w.geometry) == 0: informal[key].append(0)
+                else: informal[key].append(sum(informal_w.geometry.area))
+                if len(all_cycl_w.geometry) == 0: all_cycl[key].append(0)
+                else: all_cycl[key].append(sum(all_cycl_w.geometry.area))
                 print(onstreet)
                 print(offstreet)
                 print(informal)
+                print(all_cycl)
 
         dict_of_dicts['cycl_onstreet'] = onstreet
         dict_of_dicts['cycl_offstreet'] = offstreet
         dict_of_dicts['cycl_informal'] = informal
+        dict_of_dicts['all_cycl'] = all_cycl
 
         for key, value in dict_of_dicts.items():
             for key2, value2 in value.items():
@@ -766,9 +795,34 @@ class City:
 
     def linear_correlation_lda(self):
         gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
+        gdf = gdf.loc[gdf.geometry.area < 7000000]
+        r = gdf.corr(method='pearson')
+        r.to_csv(self.directory + self.municipality + '_r.csv')
+        print(r)
+
+    def gravity(self):
+        # WIP
+        gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
+        flows = {'origin': [], 'destination': [], 'flow': []}
+        for oid in gdf.DAUID:
+            for did in gdf.DAUID:
+                flows['origin'].append(oid)
+                flows['destination'].append(did)
+                population = gdf.loc[gdf.DAUID == oid]['pop'].reset_index(drop=True)[0]
+                destinations = gdf.loc[gdf.DAUID == did]['dest_ct_lda'].reset_index(drop=True)[0]
+                if destinations == 0: destinations = 1
+                print(str(oid)+' to '+str(did)+': '+population+' people to '+str(destinations))
+                flows['flow'].append(population * destinations)
+                print(population * destinations)
+        return self
+
+    def plot_corr_form_journey2work(self):
+        # WIP
+        gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
         r2 = gdf.corr(method='pearson')
-        r2.to_csv(self.directory + self.municipality + '_r2.csv')
-        print(r2)
+
+        columns = {'Density': [], 'Diversity': [], 'Network': [], 'Cycling': []}
+        return self
 
 
 class Sandbox:
