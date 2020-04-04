@@ -25,11 +25,12 @@ SOFTWARE.
 import datetime
 import math
 import glob, os
+os.environ["PROJ_LIB"] = r"C:\\Users\\Anaconda3\\Library\\share"
 import time
 import timeit
 import warnings
 from shutil import copyfile
-
+import pandana as pdna
 import geopandas as gpd
 import numpy as np
 import osmnx as ox
@@ -38,6 +39,11 @@ from Statistics.basic_stats import shannon_div
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from shapely.geometry import Point
+import matplotlib.pyplot as plt
+import matplotlib.image as img
+from matplotlib.colors import ListedColormap
+from matplotlib import cm
+# from mpl_toolkits.basemap import Basemap
 
 
 class City:
@@ -56,7 +62,9 @@ class City:
             self.edges = gpd.read_file(self.gpkg, layer='network_streets')
             self.nodes = gpd.read_file(self.gpkg, layer='network_intersections')
         except: pass
-        try: self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+        try:
+            self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+            self.bbox = self.boundary.total_bounds
         except: print('land_municipal_boundary layer not read')
         try: self.LDAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
         except: print('land_dissemination_area layer not read')
@@ -76,11 +84,12 @@ class City:
         print('Class ' + self.city_name + ' created @ ' + str(datetime.datetime.now()))
 
     # Scrape and clean data
-    def check_file_databases(self, bound=True, net=True, census=True, bcaa=True, icbc=True):
+    def update_databases(self, bound=True, net=True, census=True, bcaa=True, icbc=True):
         # Check if boundary data exists and download it from OSM if not
         if bound:
             try:
                 self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+                self.bbox = self.boundary.total_bounds
                 print(self.city_name + ' boundary read from database')
             except:
                 print('No boundary in database, downloading for ' + self.city_name)
@@ -89,6 +98,7 @@ class City:
                 self.boundary.to_crs({'init': 'epsg:26910'}, inplace=True)
                 self.boundary.to_file(self.gpkg, layer='land_municipal_boundary', driver='GPKG')
                 self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+                self.bbox = self.boundary.total_bounds
             s_index = self.boundary.sindex
 
         # Check if network data exists and download it from OSM if not
@@ -391,8 +401,81 @@ class City:
 
             return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
 
+    def network_analysis(self, sample, service_areas):
+        print('> Network analysis at the ' + sample + ' level at ' + str(service_areas) + ' buffer radius')
+        start_time = timeit.default_timer()
+
+        if sample == 'lda': sample_gdf = self.LDAs
+        elif sample == 'parcel': sample_gdf = self.parcels
+        else: sample_gdf = None
+
+        # Load data
+        nodes = self.nodes
+        edges = self.edges
+        print(nodes.head(3))
+        print(edges.head(3))
+        nodes.index = nodes.osmid
+
+        # Create network
+        net = pdna.Network(nodes.geometry.x,
+                           nodes.geometry.y,
+                           edges["from"],
+                           edges["to"],
+                           edges[["length"]],
+                           twoway=True)
+        print(net)
+        net.precompute(max(service_areas))
+
+        gdfs = {'lda': self.LDAs,
+                'parcel': self.parcels,
+                'nodes': self.nodes,
+                'links': self.edges}
+        cols = {'lda': [],
+                'parcel': ["NUMBER_OF_BEDROOMS", "NUMBER_OF_BATHROOMS", "elab_use"],
+                'nodes': ["one"],
+                'links': ["one"]}
+
+        x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
+        sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
+
+        buffers = {}
+        for key, values in cols.items():
+            gdf = gdfs[key]
+            x, y = gdf.centroid.x, gdf.centroid.y
+            gdf["node_ids"] = net.get_node_ids(x.values, y.values)
+            gdf["one"] = 1
+
+            # Try to convert to numeric
+            for value in values:
+                try: pd.to_numeric(gdf[value])
+                except:
+                    for item in gdf[value].unique():
+                        if value in ['residential', 'retail', 'office', 'civic', 'entertainment']:
+                            gdf.loc[gdf[value] == item, item] = 1
+                            gdf.loc[gdf[value] != item, item] = 0
+                            values.append(item)
+                    values.remove(value)
+
+            for value in values:
+                print('Processing ' + value + ' column at ' + key + ' GeoDataFrame')
+                net.set(node_ids=gdf["node_ids"], variable=gdf[value])
+
+                for radius in service_areas:
+                    count = net.aggregate(distance=radius, type="count", decay="flat")
+                    sum = net.aggregate(distance=radius, type="sum", decay="flat")
+                    ave = net.aggregate(distance=radius, type="ave", decay='flat')
+
+                    sample_gdf[value + '_r' + str(radius) + '_count'] = list(count.loc[sample_gdf["node_ids"]])
+                    sample_gdf[value + '_r' + str(radius) + '_sum'] = list(sum.loc[sample_gdf["node_ids"]])
+                    sample_gdf[value + '_r' + str(radius) + '_ave'] = list(ave.loc[sample_gdf["node_ids"]])
+
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        sample_gdf.to_file(self.gpkg, layer=sample+'_na', driver='GPKG')
+        return print('Network analysis processed in ' + str(elapsed) + ' minutes @ ' + str(datetime.datetime.now()))
+
     # Spatial analysis
-    def set_parameters(self, service_areas, unit='lda', samples=None, max_area=7000000, elab_name='Sunset', bckp=True):
+    def set_parameters(self, service_areas, unit='lda', samples=None, max_area=7000000, elab_name='Sunset', bckp=True,
+                       layer='Optional GeoPackage layer to analyze', buffer_type='circular'):
         # Load GeoDataFrame and assign layer name for LDA
         if unit == 'lda':
             gdf = self.LDAs.loc[self.LDAs.geometry.area < max_area]
@@ -400,26 +483,25 @@ class City:
 
         # Pre process database for elementslab 1600x1600m 'Sandbox'
         elif unit == 'elab_sandbox':
-            layer = 'elab_sandbox'
-            filename = 'parcels_2020.geojson'
             self.directory = 'Sandbox/'+elab_name
             self.gpkg = elab_name+'.gpkg'
-            self.parcels = gpd.read_file(filename)
+            if 'PRCLS' in layer:
+                nodes_gdf = gpd.read_file(self.gpkg, layer='network_intersections')
+                edges_gdf = gpd.read_file(self.gpkg, layer='network_streets')
+                cycling_gdf = gpd.read_file(self.gpkg, layer='network_cycling')
+                if '2020' in layer:
+                    self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2020'] == 1]
+                    self.edges = edges_gdf.loc[edges_gdf['new'] == 0]
+                    self.cycling = cycling_gdf.loc[cycling_gdf['year'] == '2020-01-01']
+                    self.cycling['type'] = self.cycling['type2020']
+                    self.cycling.reset_index(inplace=True)
+                elif '2050' in layer:
+                    self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2050'] == 1]
+                    self.edges = edges_gdf
+                    self.cycling = cycling_gdf
+                    self.cycling['type'] = cycling_gdf['type2050']
+            self.parcels = gpd.read_file(self.gpkg, layer=layer)
             self.parcels.crs = {'init': 'epsg:26910'}
-
-            nodes_gdf = gpd.read_file(self.gpkg, layer='network_intersections')
-            edges_gdf = gpd.read_file(self.gpkg, layer='network_streets')
-            cycling_gdf = gpd.read_file(self.gpkg, layer='network_cycling')
-            if '2020' in filename:
-                self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2020'] == 1]
-                self.edges = edges_gdf.loc[edges_gdf['new'] == 0]
-                self.cycling = cycling_gdf.loc[cycling_gdf['year'] == '2020-01-01']
-                self.cycling['type'] = self.cycling['type2020']
-                self.cycling.reset_index(inplace=True)
-            elif '2050' in filename:
-                self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2050'] == 1]
-                self.edges = edges_gdf
-                self.cycling['type'] = cycling_gdf['type2050']
 
             # Reclassify land uses and create bedroom and bathroom columns
             uses = {'residential': ['RS_SF_D', 'RS_SF_A', 'RS_MF_L', 'RS_MF_H'],
@@ -444,24 +526,26 @@ class City:
             # gdf = gpd.GeoDataFrame(geometry=self.parcels.unary_union.convex_hull)
             gdf = self.parcels[['OBJECTID', 'geometry']]
             gdf.crs = {'init': 'epsg:26910'}
-        else:
-            gdf = None
+        else: gdf = None
 
-        # Buffer polygons for cross-scale data aggregation and output one GeoDataframe for each scale of analysis
         c_hull = gdf.geometry.unary_union.convex_hull
         if samples is not None:
             gdf = gdf.sample(samples)
             gdf.sindex()
-        self.gdfs = {'_' + unit: gdf}
+        self.gdfs = {}
         buffers = {}
         for radius in service_areas:
             buffers[radius] = []
-        for row in gdf.iterrows():
-            geom = row[1].geometry
-            for radius in service_areas:
-                lda_buffer = geom.centroid.buffer(radius)
-                buffer_diff = lda_buffer.intersection(c_hull)
-                buffers[radius].append(buffer_diff)
+
+        if buffer_type == 'circular':
+            # Buffer polygons for cross-scale data aggregation and output one GeoDataframe for each scale of analysis
+            for row in gdf.iterrows():
+                geom = row[1].geometry
+                for radius in service_areas:
+                    lda_buffer = geom.centroid.buffer(radius)
+                    buffer_diff = lda_buffer.intersection(c_hull)
+                    buffers[radius].append(buffer_diff)
+
         for radius in service_areas:
             self.gdfs['_r' + str(radius) + 'm'] = gpd.GeoDataFrame(geometry=buffers[radius], crs=gdf.crs)
             sindex = self.gdfs['_r' + str(radius) + 'm'].sindex
@@ -848,6 +932,36 @@ class City:
         return print('Cycling network indicators processed in ' + str(elapsed) + ' minutes')
 
     # Export results
+    def export_map(self):
+        
+        # Process geometry
+        boundaries = self.LDAs.geometry.boundary
+        centroids = gpd.GeoDataFrame(geometry=self.LDAs.geometry.centroid)
+        buffers = {'radius': [], 'geometry': []}
+        for radius in self.params['service_areas']:
+            for geom in centroids.geometry.buffer(radius):
+                buffers['radius'].append(radius)
+                buffers['geometry'].append(geom)
+        buffers_gdf = gpd.GeoDataFrame(buffers)
+        buffer_bounds = gpd.GeoDataFrame(geometry=buffers_gdf['geometry'].boundary)
+        buffer_bounds['radius'] = buffers_gdf['radius']
+
+        COLOR_MAP = 'viridis'
+        ALPHA = 0.05
+
+        cmap = cm.get_cmap(COLOR_MAP)
+        colormap_r = ListedColormap(cmap.colors[::-1])
+
+        # Plot geometry
+        fig, ax = plt.subplots(1, 1)
+        buffer_bounds.plot(ax=ax, column='radius', colormap=COLOR_MAP, alpha=ALPHA*2)
+        boundaries.plot(ax=ax, color='black', linewidth=0.2, linestyle='solid', alpha=0.6)
+        centroids.plot(ax=ax, color='#88D2D5', markersize=0.2)
+        plt.axis('off')
+        plt.savefig('Diagrams/'+self.municipality+' - Mobility Diagram.png', dpi=600)
+
+        return self
+
     def linear_correlation_lda(self):
         gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
         gdf = gdf.loc[gdf.geometry.area < 7000000]
@@ -855,8 +969,24 @@ class City:
         r.to_csv(self.directory + self.municipality + '_r.csv')
         print(r)
 
-    def export_shapefiles(self):
-        gpd.read_file(self.gpkg, layer='elab_sandbox').to_file('Shapefiles/Parcels.shp', driver='ESRI Shapefile')
+    def export_destinations(self):
+        dest_gdf = self.parcels.loc[(self.parcels['elab_use'] == 'retail') |
+                                    (self.parcels['elab_use'] == 'office') |
+                                    (self.parcels['elab_use'] == 'entertainment')]
+        dest_gdf['geometry'] = dest_gdf.geometry.centroid
+        dest_gdf.drop_duplicates('geometry')
+        dest_gdf.to_file(self.directory+'Shapefiles/'+self.municipality+' - Destinations.shp', driver='ESRI Shapefile')
+        return self
+
+    def export_parcels(self):
+        gdf = self.parcels
+        gdf.to_file('Shapefiles/' + self.params['layer'], driver='ESRI Shapefile')
+        for col in gdf.columns:
+            if str(type(gdf[col][0])) == "<class 'numpy.float64'>" or str(type(gdf[col][0])) == "<class 'numpy.int64'>":
+                if sum(gdf[col]) == 0:
+                    gdf.drop(col, inplace=True, axis=1)
+                    print(col + ' column removed')
+        gdf.to_file('Shapefiles/'+self.params['layer']+'_num', driver='ESRI Shapefile')
         return self
 
     def gravity(self):
@@ -875,21 +1005,34 @@ class City:
                 print(population * destinations)
         return self
 
+    def export_databases(self):
+        layers = ['network_streets', 'land_dissemination_area', 'land_assessment_fabric']
+        directory = '/Users/nicholasmartino/Desktop/temp/'
+        for layer in layers:
+            print('Exporting layer: '+layer)
+            gdf = gpd.read_file(self.gpkg, layer=layer)
+            gdf.to_file(directory+self.municipality+' - '+layer+'.shp', driver='ESRI Shapefile')
+        return self
+
 
 class Sandbox:
-    def __init__(self, name, geodatabase='.gdb'):
+    def __init__(self, name, geodatabase, layers):
         self.name = name
         self.gdb = geodatabase
+        self.directory = "../Geospatial/Databases/Sandbox/"
+        self.layers = layers
 
     def morph_indicators(self):
-        os.chdir("../Geospatial/Databases/Sandbox/" + self.name)
-        model = City()
-        model.set_parameters(unit='elab_sandbox', service_areas=[400, 800, 1600], elab_name=self.name, bckp=False)
-        model.density_indicators()
-        model.diversity_indicators()
-        model.street_network_indicators()
-        model.cycling_network_indicators()
-        model.export_shapefiles()
+        os.chdir(self.directory + self.name)
+        for layer in self.layers:
+            model = City()
+            model.set_parameters(unit='elab_sandbox', service_areas=[400, 800, 1600], elab_name=self.name, bckp=False,
+                                 layer=layer)
+            model.density_indicators()
+            model.diversity_indicators()
+            model.street_network_indicators()
+            model.cycling_network_indicators()
+            model.export_parcels()
         return self
 
     def morph_indic_1600(self, radius=400, population_density=True, dwelling_density=True, retail_density=True,
