@@ -25,7 +25,6 @@ SOFTWARE.
 import datetime
 import math
 import glob, os
-os.environ["PROJ_LIB"] = r"C:\\Users\\Anaconda3\\Library\\share"
 import time
 import timeit
 import warnings
@@ -44,6 +43,20 @@ import matplotlib.image as img
 from matplotlib.colors import ListedColormap
 from matplotlib import cm
 # from mpl_toolkits.basemap import Basemap
+import seaborn as sns
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+import warnings
+warnings.filterwarnings("ignore")
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import confusion_matrix
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
+from sklearn.datasets import fetch_20newsgroups_vectorized
+from sklearn.feature_selection import chi2
+
+
+np.random.seed(123)
 
 
 class City:
@@ -401,7 +414,7 @@ class City:
 
             return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
 
-    def network_analysis(self, sample, service_areas):
+    def network_analysis(self, sample, service_areas, cols):
         print('> Network analysis at the ' + sample + ' level at ' + str(service_areas) + ' buffer radius')
         start_time = timeit.default_timer()
 
@@ -430,10 +443,6 @@ class City:
                 'parcel': self.parcels,
                 'nodes': self.nodes,
                 'links': self.edges}
-        cols = {'lda': [],
-                'parcel': ["NUMBER_OF_BEDROOMS", "NUMBER_OF_BATHROOMS", "elab_use"],
-                'nodes': ["one"],
-                'links': ["one"]}
 
         x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
         sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
@@ -930,6 +939,71 @@ class City:
 
         elapsed = round((timeit.default_timer() - start_time) / 60, 1)
         return print('Cycling network indicators processed in ' + str(elapsed) + ' minutes')
+
+    # Process results
+    def regression(self):
+        """
+        Reference: https://towardsdatascience.com/feature-selection-correlation-and-p-value-da8921bfb3cf
+        """
+
+        gdf = self.params['gdf']
+        sas = self.params['service_areas']
+
+        pg_gdf = gpd.read_file('/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Prince George, British Columbia.gpkg', layer='land_dissemination_area')
+        van_gdf = gpd.read_file('/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Metro Vancouver, British Columbia.gpkg', layer='land_dissemination_area')
+        gdf = pd.concat([pg_gdf, van_gdf])
+
+        # Get name of urban form features analyzed within the service areas
+        x_features = []
+        for col in gdf.columns:
+            for radius in sas:
+                id = f'_r{radius}m'
+                if id in col[len(id):]:
+                    x_features.append(col)
+
+        # Get y-variables
+        gdf['drive'] = gdf['car_driver']+gdf['car_passenger']
+        y_features = ['walk', 'bike', 'drive', 'bus']
+        y_gdf = gdf[y_features]
+        y_gdf.dropna(inplace=True)
+
+        # Calculate correlation among features
+        x_gdf = gdf[x_features]
+        x_gdf.dropna(inplace=True, axis=1)
+        corr = x_gdf.corr()
+        sns.heatmap(corr)
+        plt.show()
+
+        # Drop correlations higher than 90%
+        columns = np.full((corr.shape[0],), True, dtype=bool)
+        for i in range(corr.shape[0]):
+            for j in range(i + 1, corr.shape[0]):
+                if corr.iloc[i, j] >= 0.9:
+                    if columns[j]:
+                        columns[j] = False
+        selected_columns = x_gdf.columns[columns]
+        x_gdf = x_gdf[selected_columns]
+        x_gdf = x_gdf.iloc[y_gdf.index]
+
+        # Calculate p-values
+        x = x_gdf.values
+        y = y_gdf.values
+        p = pd.DataFrame()
+        p['feature'] = selected_columns
+
+        for i, col in enumerate(y_gdf.columns):
+            regressor_ols = sm.OLS(y.transpose()[i-1], x).fit()
+            with open(f'Regression/{datetime.datetime.now()}_{col}.txt', 'w') as file:
+                file.write(str(regressor_ols.summary()))
+            p[f'{col}_pv'] = regressor_ols.pvalues
+
+        # Select n highest p-values for each Y
+        highest = pd.DataFrame()
+        for i, col in enumerate(y_gdf.columns):
+            srtd = p.sort_values(by=f'{col}_pv', ascending=False)
+            highest[f'{col}'] = list(srtd.head(3)['feature'])
+
+        return
 
     # Export results
     def export_map(self):
