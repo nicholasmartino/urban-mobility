@@ -22,385 +22,146 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-import datetime
-import math
-import glob, os
-import time
+import os
+import glob
 import timeit
-import warnings
+import zipfile
 from shutil import copyfile
-import pandana as pdna
+
 import geopandas as gpd
-import numpy as np
+import matplotlib.pyplot as plt
 import osmnx as ox
+import pandana as pdna
 import pandas as pd
+from graph_tool.all import *
+from graph_tool import centrality
+import pylab as pl
+import rasterio
+import requests
+import seaborn as sns
+import statsmodels.api as sm
+from PIL import Image
 from Statistics.basic_stats import shannon_div
+from matplotlib.colors import ListedColormap
+from pylab import *
+from rasterio import features
 from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
-from shapely.geometry import Point
-import matplotlib.pyplot as plt
-import matplotlib.image as img
-from matplotlib.colors import ListedColormap
-from matplotlib import cm
-# from mpl_toolkits.basemap import Basemap
-import seaborn as sns
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder
-import warnings
-warnings.filterwarnings("ignore")
-from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-from sklearn.metrics import confusion_matrix
-import statsmodels.api as sm
-import statsmodels.formula.api as smf
-from sklearn.datasets import fetch_20newsgroups_vectorized
-from sklearn.feature_selection import chi2
+from shapely.affinity import translate, scale
+from shapely.geometry import *
+from shapely.ops import nearest_points, triangulate
+from skimage import morphology as mp
 
 
-np.random.seed(123)
+def download_file(url, filename=None):
+    if filename is None: local_filename = url.split('/')[-1]
+    else: local_filename = filename
+    # NOTE the stream=True parameter below
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(local_filename, 'wb') as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk: # filter out keep-alive new chunks
+                    f.write(chunk)
+                    # f.flush()
+    return local_filename
 
 
-class City:
-    def __init__(self, directory='../Geospatial/Databases/',
-                 municipality='City, State',
-                 census_file='Statistics Canada.gpkg',
-                 tax_assessment_file='BC Assessment.gpkg'):
-        self.municipality = municipality
+class GeoBoundary:
+    def __init__(self, municipality='City, State', crs=26910,
+                 directory='/Users/nicholasmartino/GoogleDrive/Geospatial/'):
+        print(f"\nCreating GeoSpatial class {municipality}")
+        self.municipality = str(municipality)
         self.directory = directory
-        self.census_file = self.directory + census_file
-        self.assessment = self.directory + tax_assessment_file
-        self.gpkg = self.directory + self.municipality + '.gpkg'
-        self.city_name = self.municipality.partition(',')[0]
-        self.crs = '26910'
-        try:
-            self.edges = gpd.read_file(self.gpkg, layer='network_streets')
-            self.nodes = gpd.read_file(self.gpkg, layer='network_intersections')
-        except: pass
+        self.gpkg = f"{self.directory}Databases/{self.municipality}.gpkg"
+        self.city_name = str(self.municipality).split(',')[0]
+        self.crs = crs
+
         try:
             self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
             self.bbox = self.boundary.total_bounds
-        except: print('land_municipal_boundary layer not read')
-        try: self.LDAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
-        except: print('land_dissemination_area layer not read')
-        try: self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
-        except: print('land_assessment_fabric layer not read')
-        try:
-            self.walking_net = gpd.read_file(self.gpkg, layer='network_streets_walking')
-            self.cycling_net = gpd.read_file(self.gpkg, layer='network_streets_cycling')
-            self.driving_net = gpd.read_file(self.gpkg, layer='network_streets_driving')
-        except: pass
-        try: self.cycling = gpd.read_file(self.gpkg, layer='network_cycling')
-        except: print('network_cycling layer not read')
-        warnings.simplefilter(action='ignore', category=FutureWarning)
-        warnings.simplefilter(action='ignore', category=DeprecationWarning)
-        warnings.simplefilter(action='ignore', category=UserWarning)
-        warnings.simplefilter(action='ignore', category=ResourceWarning)
-        print('Class ' + self.city_name + ' created @ ' + str(datetime.datetime.now()))
+            print("> land_municipal_boundary layer found")
+        except: print("> land_municipal_boundary layer not found")
 
-    # Scrape and clean data
-    def update_databases(self, bound=True, net=True, census=True, bcaa=True, icbc=True):
-        # Check if boundary data exists and download it from OSM if not
+        try:
+            self.nodes = gpd.read_file(self.gpkg, layer='network_nodes')
+            self.links = gpd.read_file(self.gpkg, layer='network_links')
+            print("> network_nodes & _links layers found")
+        except: print("> network_nodes &| _links layer(s) not found")
+
+        # try:
+        #     self.DAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
+        #     print("> land_dissemination_area layer found")
+        # except: print('> land_dissemination_area layer not found')
+
+        # try:
+        #     self.properties = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
+        #     self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_parcels')
+        #     print("> land_assessment_fabric and land_assessment_parcels layers found")
+        # except: print("> land_assessment_fabric &| land_assessment_parcels layer(s) not found")
+
+        # try:
+        #     self.walking_net = gpd.read_file(self.gpkg, layer='network_links_walking')
+        #     self.cycling_net = gpd.read_file(self.gpkg, layer='network_links_cycling')
+        #     self.driving_net = gpd.read_file(self.gpkg, layer='network_links_driving')
+        #     print('> _walking, _cycling and _driving network_links layers found')
+        # except: print('> network_links_{walking &| cycling &| driving} layer(s) not found')
+
+        # try:
+        #     self.cycling = gpd.read_file(self.gpkg, layer='network_cycling_official')
+        #     print('> network_cycling_official layer found')
+        # except: print('> network_cycling_official layer not found')
+
+        print(f"Class {self.city_name} created @ {datetime.datetime.now()}, crs {self.crs}\n")
+
+    # Download and pre process data
+    def update_databases(self, bound=True, net=True, census=False, icbc=False):
+        # Download administrative boundary from OpenStreetMaps
         if bound:
-            try:
-                self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
-                self.bbox = self.boundary.total_bounds
-                print(self.city_name + ' boundary read from database')
-            except:
-                print('No boundary in database, downloading for ' + self.city_name)
-                self.boundary = ox.gdf_from_place(self.municipality)  # gdf
-                self.boundary.crs = {'init': 'epsg:4326'}
-                self.boundary.to_crs({'init': 'epsg:26910'}, inplace=True)
-                self.boundary.to_file(self.gpkg, layer='land_municipal_boundary', driver='GPKG')
-                self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
-                self.bbox = self.boundary.total_bounds
+            print(f"Downloading {self.city_name}'s administrative boundary from OpenStreetMaps")
+            self.boundary = ox.gdf_from_place(self.municipality)
+            # self.boundary.to_crs(crs=4326, epsg=4326, inplace=True)
+            # self.boundary.to_crs(crs=26910, epsg=26910, inplace=True)
+            self.boundary.to_file(self.gpkg, layer='land_municipal_boundary', driver='GPKG')
+            self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+            self.boundary.to_crs(epsg=self.crs, inplace=True)
+            self.bbox = self.boundary.total_bounds
             s_index = self.boundary.sindex
 
-        # Check if network data exists and download it from OSM if not
+        # Download street networks from OpenStreetMaps
         if net:
-            try:
-                self.edges = gpd.read_file(self.gpkg, layer='network_streets')
-                self.nodes = gpd.read_file(self.gpkg, layer='network_intersections')
-                print(self.city_name + ' network read from database')
-            except:
-                print('No network in database, downloading for ' + self.city_name)
-                network = ox.graph_from_place(self.municipality)
-                ox.save_graph_shapefile(network, 'osm', self.directory)
-                edges = gpd.read_file(self.directory+'osm/edges/edges.shp')
-                nodes = gpd.read_file(self.directory+'osm/nodes/nodes.shp')
-                edges.crs = {'init': 'epsg:4326'}
-                edges.to_crs(crs='epsg:26910', inplace=True)
-                edges.to_file(self.gpkg, layer='network_streets', driver='GPKG')
-                nodes.crs = {'init': 'epsg:4326'}
-                nodes.to_crs(crs='epsg:26910', inplace=True)
-                nodes.to_file(self.gpkg, layer='network_intersections', driver='GPKG')
-                try:
-                    os.remove('osm')
-                except:
-                    pass
-                self.edges = gpd.read_file(self.gpkg, layer='network_streets')
-                self.nodes = gpd.read_file(self.gpkg, layer='network_intersections')
+            print(f"Downloading {self.city_name}'s street network from OpenStreetMaps")
+            network = ox.graph_from_place(self.municipality)
+            ox.save_graph_shapefile(network, 'osm', self.directory)
+            edges = gpd.read_file(self.directory+'osm/edges/edges.shp')
+            nodes = gpd.read_file(self.directory+'osm/nodes/nodes.shp')
+            edges.crs = 4326  # {'init': 'epsg:4326'}
+            edges.to_crs(epsg=self.crs, inplace=True)
+            edges.to_file(self.gpkg, layer='network_links', driver='GPKG')
+            nodes.crs = 4326  # {'init': 'epsg:4326'}
+            nodes.to_crs(epsg=self.crs, inplace=True)
+            nodes.to_file(self.gpkg, layer='network_nodes', driver='GPKG')
+            self.links = gpd.read_file(self.gpkg, layer='network_links')
+            self.nodes = gpd.read_file(self.gpkg, layer='network_nodes')
 
-        # Check if dissemination data exists and join it from census database if not
-        if census:
-            try:
-                self.LDAs = gpd.read_file(self.gpkg, layer='land_dissemination_area')
-                print(self.city_name + ' census data read from database')
-            except:
-                census_lda = gpd.read_file(self.census_file, layer='land_dissemination_area')
-                census_lda.crs = {'init': 'epsg:4326'}
-                census_lda.to_crs({'init': 'epsg:26910'}, inplace=True)
-                self.LDAs = gpd.sjoin(census_lda, self.boundary)
-
-                # Calculate population density
-                fields = ['Car; truck; van - as a driver', 'Car; truck; van - as a passenger',
-                          'Public transit', 'Walked', 'Bicycle', 'Other method']
-                fgdf = gpd.GeoDataFrame()
-                for field in fields:
-                    fgdf[field] = self.LDAs[field].astype('float')
-                self.LDAs['pop'] = fgdf.sum(axis=1, skipna=True)
-                self.LDAs['pop_den'] = self.LDAs['pop'] / (self.LDAs.geometry.area * 10000)
-
-                self.LDAs.to_file(self.gpkg, layer='land_dissemination_area')
-                print('Census dissemination area joined for ' + self.city_name)
-
-        # Check if BC Assessment data exists and join it from BCAA database if not
-        if bcaa:
-            try:
-                self.parcels = gpd.read_file(self.gpkg, layer='land_assessment_fabric')
-                print(self.city_name + ' BC Assessment data read from database')
-            except:
-                # # Spatial join with spatial index BC Assessment data
-                start_time = time.time()
-                # gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
-                # print("BC Assessment data read in %s minutes" % str(
-                #     round((time.time() - start_time) / 60, 2)))
-                # start_time = time.time()
-                # matches = gpd.sjoin(gdf, self.boundary, op='within')
-                # matches.to_file(self.gpkg, layer='land_assessment_fabric')
-                self.parcels = self.aggregate_bca_from_field()
-                print("Spatial join and export for " + self.city_name + " performed in %s minutes " % str(
-                    round((time.time() - start_time) / 60, 2)))
-
-        # Check if ICBC crash data exists and join it from ICBC database if not
-        if icbc:
-            try:
-                self.crashes = gpd.read_file(self.gpkg, layer='network_accidents')
-                print(self.city_name + ' ICBC data read from database')
-            except:
-                source = 'https://public.tableau.com/profile/icbc#!/vizhome/LowerMainlandCrashes/LMDashboard'
-                print('Adding ICBC crash data to ' + self.city_name + ' database')
-                df = self.merge_csv('Databases/ICBC/')
-                geometry = [Point(xy) for xy in zip(df['Longitude'], df['Latitude'])]
-                gdf = gpd.GeoDataFrame(df, geometry=geometry)
-                gdf.crs = {'init': 'epsg:4326'}
-                gdf.to_crs({'init': 'epsg:26910'}, inplace=True)
-                matches = gpd.sjoin(gdf, self.boundary, op='within')
-                matches.to_file(self.gpkg, layer='network_accidents', driver='GPKG')
-
-    def aggregate_bca_from_field(self):
-        print('Aggregating BC Assessment from field')
-        inventory = self.directory+'BCA/Inventory Information - RY 2017.csv'
-        df = pd.read_csv(inventory)
-
-        # Load and process Roll Number field on both datasets
-        gdf = gpd.read_file(self.directory+'BCA/BCA_2017_roll_number_method.gdb', layer='ASSESSMENT_FABRIC')
-        gdf.crs = {'init': 'epsg:3005'}
-        gdf.to_crs({'init': 'epsg:26910'}, inplace=True)
-        s_index = gdf.sindex
-        gdf = gpd.sjoin(gdf, self.boundary, op='within')
-        gdf['JUROL'] = gdf['JUROL'].astype(str)
-        gdf = gdf[gdf.geometry.area > 71]
-        print('BCA spatial layer loaded with ' + str(len(gdf)) + ' parcels')
-        df['JUR'] = df['JUR'].astype(int).astype(str)
-        df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
-        df['JUROL'] = df['JUR'] + df['ROLL_NUM']
-
-        merged = pd.merge(gdf, df, on='JUROL')
-        full_gdfs = {'0z': merged}
-        print(': ' + str(len(full_gdfs['0z'])))
-
-        for i in range(1, 7):
-            strings = []
-            for n in range(i):
-                strings.append('0')
-            string = str(''.join(strings))
-            df[string + 'z'] = string
-            df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
-            full_gdf = pd.merge(gdf, df, on='JUROL')
-            full_gdf.drop([string + 'z'], axis=1)
-            if len(full_gdf) > 0:
-                full_gdfs[str(i) + 'z'] = full_gdf
-            print(string + ': ' + str(len(full_gdf)))
-
-        # Merge and export spatial and non-spatial datasets
-        out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
-        print(len(out_gdf))
-
-        # Reclassify land uses for BC Assessment data
-        uses = {
-            'residential': ['000 - Single Family Dwelling', '030 - Strata-Lot Residence (Condominium)',
-                            '032 - Residential Dwelling with Suite',
-                            '033 - Duplex, Non-Strata Side by Side or Front / Back',
-                            '034 - Duplex, Non-Strata Up / Down', '035 - Duplex, Strata Side by Side',
-                            '036 - Duplex, Strata Front / Back', '039 - Row Housing (Single Unit Ownership)',
-                            '037 - Manufactured Home (Within Manufactured Home Park)',
-                            '038 - Manufactured Home (Not In Manufactured Home Park)',
-                            '040 - Seasonal Dwelling',
-                            '041 - Duplex, Strata Up / Down', '047 - Triplex', '049 - Fourplex',
-                            '050 - Multi-Family (Apartment Block)',
-                            '052 - Multi-Family (Garden Apartment & Row Housing)', '053 - Multi-Family (Conversion)',
-                            '054 - Multi-Family (High-Rise)', '055 - Multi-Family (Minimal Commercial)',
-                            '056 - Multi-Family (Residential Hotel)', '057 - Stratified Rental Townhouse',
-                            '058 - Stratified Rental Apartment (Frame Construction)',
-                            '059 - Stratified Rental Apartment (Hi-Rise Construction)',
-                            '060 - 2 Acres Or More (Single Family Dwelling, Duplex)', '285 - Seniors Licensed Care',
-                            '062 - 2 Acres Or More (Seasonal Dwelling)',
-                            '063 - 2 Acres Or More (Manufactured Home)',
-                            '234 - Manufactured Home Park',
-                            '286 - Seniors Independent & Assisted Living'],
-            'vacant': ['001 - Vacant Residential Less Than 2 Acres', '051 - Multi-Family (Vacant)',
-                       '061 - 2 Acres Or More (Vacant)', '201 - Vacant IC&I',
-                       '421 - Vacant', '422 - IC&I Water Lot (Vacant)',
-                       '601 - Civic, Institutional & Recreational (Vacant)'],
-            'parking': ['020 - Residential Outbuilding Only', '029 - Strata Lot (Parking Residential)',
-                        '043 - Parking (Lot Only, Paved Or Gravel-Res)', '219 - Strata Lot (Parking Commercial)',
-                        '260 - Parking (Lot Only, Paved Or Gravel-Com)', '262 - Parking Garage',
-                        '490 - Parking Lot Only (Paved Or Gravel)'],
-            'other': ['002 - Property Subject To Section 19(8)', '070 - 2 Acres Or More (Outbuilding)', '190 - Other',
-                      '200 - Store(S) And Service Commercial', '205 - Big Box', '216 - Commercial Strata-Lot',
-                      '220 - Automobile Dealership', '222 - Service Station', '224 - Self-Serve Service Station',
-                      '226 - Car Wash', '227 - Automobile Sales (Lot)', '228 - Automobile Paint Shop, Garages, Etc.',
-                      '230 - Hotel', '232 - Motel & Auto Court', '233 - Individual Strata Lot (Hotel/Motel)',
-                      '237 - Bed & Breakfast Operation 4 Or More Units',
-                      '239 - Bed & Breakfast Operation Less Than 4 Units',
-                      '240 - Greenhouses And Nurseries (Not Farm Class)', '257 - Fast Food Restaurants',
-                      '258 - Drive-In Restaurant', '288 - Sign Or Billboard Only'],
-            'retail': ['202 - Store(S) And Living Quarters', '209 - Shopping Centre (Neighbourhood)',
-                       '211 - Shopping Centre (Community)', '212 - Department Store - Stand Alone',
-                       '213 - Shopping Centre (Regional)', '214 - Retail Strip', '215 - Food Market',
-                       '225 - Convenience Store/Service Station'],
-            'entertainment': ['236 - Campground (Commercial)', '250 - Theatre Buildings',
-                              '254 - Neighbourhood Pub', '256 - Restaurant Only',
-                              '266 - Bowling Alley', '270 - Hall (Community, Lodge, Club, Etc.)',
-                              '280 - Marine Facilities (Marina)',
-                              '600 - Recreational & Cultural Buildings (Includes Curling',
-                              '610 - Parks & Playing Fields', '612 - Golf Courses (Includes Public & Private)',
-                              '654 - Recreational Clubs, Ski Hills',
-                              '660 - Land Classified Recreational Used For'],
-            'civic': ['210 - Bank', '620 - Government Buildings (Includes Courthouse, Post Office',
-                              '625 - Garbage Dumps, Sanitary Fills, Sewer Lagoons, Etc.', '630 - Works Yards',
-                              '634 - Government Research Centres (Includes Nurseries &',
-                              '640 - Hospitals (Nursing Homes Refer To Commercial Section).',
-                              '642 - Cemeteries (Includes Public Or Private).',
-                              '650 - Schools & Universities, College Or Technical Schools',
-                              '652 - Churches & Bible Schools'],
-            'agriculture': ['110 - Grain & Forage', '120 - Vegetable & Truck',
-                            '150 - Beef', '170 - Poultry', '180 - Mixed'],
-            'office': ['203 - Stores And/Or Offices With Apartments', '204 - Store(S) And Offices',
-                       '208 - Office Building (Primary Use)'],
-            'industrial': ['217 - Air Space Title', '272 - Storage & Warehousing (Open)',
-                           '273 - Storage & Warehousing (Closed)', '274 - Storage & Warehousing (Cold)',
-                           '275 - Self Storage', '276 - Lumber Yard Or Building Supplies', '400 - Fruit & Vegetable',
-                           '401 - Industrial (Vacant)', '402 - Meat & Poultry', '403 - Sea Food',
-                           '404 - Dairy Products', '405 - Bakery & Biscuit Manufacturing',
-                           '406 - Confectionery Manufacturing & Sugar Processing', '408 - Brewery',
-                           '414 - Miscellaneous (Food Processing)',
-                           '416 - Planer Mills (When Separate From Sawmill)',
-                           '419 - Sash & Door',
-                           '420 - Lumber Remanufacturing (When Separate From Sawmill)',
-                           '423 - IC&I Water Lot (Improved)',
-                           '424 - Pulp & Paper Mills (Incl Fine Paper, Tissue & Asphalt Roof)',
-                           '425 - Paper Box, Paper Bag, And Other Paper Remanufacturing.', '428 - Improved',
-                           '429 - Miscellaneous (Forest And Allied Industry)',
-                           '434 - Petroleum Bulk Plants',
-                           '445 - Sand & Gravel (Vacant and Improved)',
-                           '447 - Asphalt Plants',
-                           '448 - Concrete Mixing Plants',
-                           '449 - Miscellaneous (Mining And Allied Industries)', '452 - Leather Industry',
-                           '454 - Textiles & Knitting Mills', '456 - Clothing Industry',
-                           '458 - Furniture & Fixtures Industry', '460 - Printing & Publishing Industry',
-                           '462 - Primary Metal Industries (Iron & Steel Mills,', '464 - Metal Fabricating Industries',
-                           '466 - Machinery Manufacturing (Excluding Electrical)',
-                           '470 - Electrical & Electronics Products Industry',
-                           '472 - Chemical & Chemical Products Industries', '474 - Miscellaneous & (Industrial Other)',
-                           '476 - Grain Elevators', '478 - Docks & Wharves', '500 - Railway',
-                           '505 - Marine & Navigational Facilities (Includes Ferry',
-                           '510 - Bus Company, Including Street Railway', '520 - Telephone',
-                           '530 - Telecommunications (Other Than Telephone)',
-                           '550 - Gas Distribution Systems',
-                           '560 - Water Distribution Systems',
-                           '580 - Electrical Power Systems (Including Non-Utility']
-        }
-
-        new_uses = []
-        index = list(out_gdf.columns).index("PRIMARY_ACTUAL_USE")
-        all_prim_uses = [item for sublist in list(uses.values()) for item in sublist]
-        for row in out_gdf.iterrows():
-            for key, value in uses.items():
-                if row[1]['PRIMARY_ACTUAL_USE'] in value:
-                    new_uses.append(key)
-            if row[1]['PRIMARY_ACTUAL_USE'] not in all_prim_uses:
-                new_uses.append(row[1]['PRIMARY_ACTUAL_USE'])
-        out_gdf['elab_use'] = new_uses
-
-        out_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_fabric')
-        return out_gdf
-
-    def aggregate_bca_from_location(self):
-        # WIP
-        gdf = gpd.read_file(self.assessment, layer='land_assessment_fabric')
-        centroids = []
-        for geom in gdf.geometry:
-            print(geom)
-            centroids.append(geom.centroid)
-        coords = []
-        for pt in centroids:
-            print(pt)
-            coords.append(str(pt.x) + '_' + str(pt.y))
-        gdf['CID'] = coords
-        df = gdf.groupby('CID').agg({
-            'JUROL': 'first',
-            'YEAR_BUILT': 'max',
-            'NUMBER_OF_STOREYS': 'max',
-            'PRIMARY_ACTUAL_USE': 'first',
-            'NUMBER_OF_BATHROOMS': 'sum',
-            'NUMBER_OF_BEDROOMS': 'sum',
-            'STRATA_UNIT_AREA': 'sum',
-            'TOTAL_FINISHED_AREA': 'sum',
-            'GROSS_BUILDING_AREA': 'mean',
-            'LAND_SIZE': 'mean',
-            'LAND_DEPTH': 'mean',
-            'ACTUAL_LAND': 'mean',
-            'ACTUAL_IMPR': 'mean',
-            'ACTUAL_TOTAL': 'mean'})
-        df['CID'] = df.index
-        gdf_geo = gdf.drop_duplicates("CID", keep='first')
-        print(str(len(df)) + ' aggregated rows for ' + str(len(gdf_geo.geometry)) + ' geometries')
-        out_geoms = []
-        for geo in gdf_geo.geometry:
-            out_geoms.append(geo)
-        df['geometry'] = out_geoms
-        gdf = gpd.GeoDataFrame(df, geometry='geometry', crs={'init': 'epsg:3005'})
-        gdf.to_file(self.assessment, layer='land_assessment_fabric_agg', driver='GPKG')
-
-    def filter_networks(self):
-        # Filter Open Street Map Networks into Walking, Cycling and Driving
-        walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
-                   'road', 'secondary', 'service', 'steps', 'tertiary', 'track', 'trunk']
-        self.walking_net = self.edges.loc[self.edges.highway.apply(lambda x: any(element in x for element in walking))]
-
-        cycling = ['bridleway', 'corridor', 'cycleway', 'footway', 'living_street', 'path', 'pedestrian',
-                   'residential', 'road', 'secondary', 'service', 'tertiary', 'track', 'trunk']
-        self.cycling_net = self.edges.loc[self.edges.highway.apply(lambda x: any(element in x for element in cycling))]
-
-        driving = ['corridor', 'living_street', 'motorway', 'primary', 'primary_link', 'residential', 'road',
-                   'secondary', 'secondary_link', 'service', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link',
-                   'unclassified']
-        self.driving_net = self.edges.loc[self.edges.highway.apply(lambda x: any(element in x for element in driving))]
-
-        self.walking_net.to_file(self.gpkg, layer='network_streets_walking')
-        self.cycling_net.to_file(self.gpkg, layer='network_streets_cycling')
-        self.driving_net.to_file(self.gpkg, layer='network_streets_driving')
-        return None
+    def merge_csv(self, path):
+        os.chdir(path)
+        file_out = "merged.csv"
+        if os.path.exists(file_out):
+            os.remove(file_out)
+        file_pattern = ".csv"
+        list_of_files = [file for file in glob.glob('*'+file_pattern)]
+        print(list_of_files)
+        # Consolidate all CSV files into one object
+        result_obj = pd.concat([pd.read_csv(file) for file in list_of_files])
+        # Convert the above object into a csv file and export
+        result_obj.to_csv(file_out, index=False, encoding="utf-8")
+        df = pd.read_csv("merged.csv")
+        full_path = os.path.realpath(__file__)
+        path, filename = os.path.split(full_path)
+        os.chdir(path)
+        print('CSVs successfully merged')
+        return df
 
     def elevation(self, hgt_file, lon, lat):
         SAMPLES = 1201  # Change this to 3601 for SRTM1
@@ -414,20 +175,134 @@ class City:
 
             return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
 
-    def network_analysis(self, sample, service_areas, cols):
-        print('> Network analysis at the ' + sample + ' level at ' + str(service_areas) + ' buffer radius')
+    # Network analysis
+    def gravity(self):
+        # WIP
+        gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
+        flows = {'origin': [], 'destination': [], 'flow': []}
+        for oid in gdf.DAUID:
+            for did in gdf.DAUID:
+                flows['origin'].append(oid)
+                flows['destination'].append(did)
+                population = gdf.loc[gdf.DAUID == oid]['pop'].reset_index(drop=True)[0]
+                destinations = gdf.loc[gdf.DAUID == did]['dest_ct_lda'].reset_index(drop=True)[0]
+                if destinations == 0: destinations = 1
+                print(str(oid)+' to '+str(did)+': '+population+' people to '+str(destinations))
+                flows['flow'].append(population * destinations)
+                print(population * destinations)
+        return self
+
+    def centrality(self):
+        links = gpd.read_file(self.gpkg, layer='network_links')
         start_time = timeit.default_timer()
 
-        if sample == 'lda': sample_gdf = self.LDAs
-        elif sample == 'parcel': sample_gdf = self.parcels
-        else: sample_gdf = None
+        # nodes = gpd.read_file(self.gpkg, layer='network_nodes')
+
+        # Extract nodes from links
+        links.dropna(subset=['geometry'], inplace=True)
+        links.reset_index(inplace=True, drop=True)
+        print(f"Processing centrality measures for {len(links)} links")
+        l_nodes = gpd.GeoDataFrame(geometry=[Point(l.xy[0][0], l.xy[1][0]) for l in links.geometry]+
+                                            [Point(l.xy[0][1], l.xy[1][1]) for l in links.geometry])
+
+        # Pre process nodes
+        rf = 3
+        l_nodes['cid'] = [f'%.{rf}f_' % n.xy[0][0] + f'%.{rf}f' % n.xy[1][0] for n in l_nodes.geometry]
+        l_nodes.drop_duplicates('cid', inplace=True)
+        l_nodes.reset_index(inplace=True, drop=True)
+
+        # Create location based id
+        links['o_cid'] = [f'%.{rf}f_' % l.xy[0][0] + f'%.{rf}f' % l.xy[1][0] for l in links.geometry]
+        links['d_cid'] = [f'%.{rf}f_' % l.xy[0][1] + f'%.{rf}f' % l.xy[1][1] for l in links.geometry]
+
+        # Create graph and add vertices
+        g = Graph(directed=False)
+        for i in list(l_nodes.index):
+            v = g.add_vertex()
+            v.index = i
+
+        # Add edges
+        for l in links.geometry:
+            o = l_nodes.loc[l_nodes['cid'] == f'%.{rf}f_' % l.xy[0][0] + f'%.{rf}f' % l.xy[1][0]].index[0]
+            d = l_nodes.loc[l_nodes['cid'] == f'%.{rf}f_' % l.xy[0][1] + f'%.{rf}f' % l.xy[1][1]].index[0]
+            g.add_edge(o, d)
+
+        # Create dual graph
+        dg = Graph(directed=False)
+
+        # Iterate over network links indexes to create nodes of dual graph
+        for i in list(links.index):
+            v = dg.add_vertex()
+            v.index = i
+
+        # Iterate over network links geometries to create edges of dual graph
+        for l, i in zip(links.geometry, list(links.index)):
+            # Get other links connected to this link
+            o = links.loc[links['o_cid'] == f'%.{rf}f_' % l.xy[0][0] + f'%.{rf}f' % l.xy[1][0]]
+            d = links.loc[links['d_cid'] == f'%.{rf}f_' % l.xy[0][1] + f'%.{rf}f' % l.xy[1][1]]
+            conn = pd.concat([o, d])
+            conn.drop_duplicates(inplace=True)
+            
+            # Add edges for dual graph
+            for j  in list(conn.index):
+                dg.add_edge(i, j)
+
+        # Calculate centrality measures
+        links['betweenness'] = betweenness(dg)[0].get_array()
+        links.fillna(0, inplace=True)
+        links['n_betweenness'] = np.log(links['betweenness'])
+
+        # Export to GeoPackage
+        links.to_file(self.gpkg, layer='network_links')
+
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        print(f"Centrality measures processed in {elapsed} minutes")
+        return links
+        
+    def filter_networks(self):
+        # Filter Open Street Map Networks into Walking, Cycling and Driving
+        walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
+                   'road', 'secondary', 'service', 'steps', 'tertiary', 'track', 'trunk']
+        self.walking_net = self.links.loc[self.links.highway.apply(lambda x: any(element in x for element in walking))]
+
+        cycling = ['bridleway', 'corridor', 'cycleway', 'footway', 'living_street', 'path', 'pedestrian',
+                   'residential', 'road', 'secondary', 'service', 'tertiary', 'track', 'trunk']
+        self.cycling_net = self.links.loc[self.links.highway.apply(lambda x: any(element in x for element in cycling))]
+
+        driving = ['corridor', 'living_street', 'motorway', 'primary', 'primary_link', 'residential', 'road',
+                   'secondary', 'secondary_link', 'service', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link',
+                   'unclassified']
+        self.driving_net = self.links.loc[self.links.highway.apply(lambda x: any(element in x for element in driving))]
+
+        self.walking_net.to_file(self.gpkg, layer='network_links_walking')
+        self.cycling_net.to_file(self.gpkg, layer='network_links_cycling')
+        self.driving_net.to_file(self.gpkg, layer='network_links_driving')
+        return None
+
+    def network_analysis(self, sample_gdf, aggregated_layers, service_areas):
+        """
+        Given a layer of spatial features, it aggregates data from its surroundings using network service areas
+
+        :param sample_layer: (str) Sample features to be analyzed, ex: 'lda' or 'parcel'.
+        :param aggregated_layers: (dict) Layers and columns to aggregate data, ex: {'lda':["walk"], 'parcel':["area"]}
+        :param service_areas: (list) Buffer to aggregate from each sample_layer feature[400, 800, 1600]
+        :return:
+        """
+
+        print(f'> Network analysis for {len(sample_gdf.geometry)} geometries at {service_areas} buffer radius')
+        start_time = timeit.default_timer()
 
         # Load data
         nodes = self.nodes
-        edges = self.edges
+        edges = self.links
         print(nodes.head(3))
         print(edges.head(3))
         nodes.index = nodes.osmid
+
+        # Reproject GeoDataFrames
+        sample_gdf.to_crs(epsg=self.crs, inplace=True)
+        nodes.to_crs(epsg=self.crs, inplace=True)
+        edges.to_crs(epsg=self.crs, inplace=True)
 
         # Create network
         net = pdna.Network(nodes.geometry.x,
@@ -439,20 +314,16 @@ class City:
         print(net)
         net.precompute(max(service_areas))
 
-        gdfs = {'lda': self.LDAs,
-                'parcel': self.parcels,
-                'nodes': self.nodes,
-                'links': self.edges}
-
         x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
         sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
 
         buffers = {}
-        for key, values in cols.items():
-            gdf = gdfs[key]
+        for key, values in aggregated_layers.items():
+            gdf = gpd.read_file(self.gpkg, layer=key)
+            gdf.to_crs(epsg=self.crs, inplace=True)
             x, y = gdf.centroid.x, gdf.centroid.y
             gdf["node_ids"] = net.get_node_ids(x.values, y.values)
-            gdf["one"] = 1
+            gdf[f"{key}_ct"] = 1
 
             # Try to convert to numeric
             for value in values:
@@ -466,28 +337,238 @@ class City:
                     values.remove(value)
 
             for value in values:
-                print('Processing ' + value + ' column at ' + key + ' GeoDataFrame')
+                print(f'Processing {value} column from {key} GeoDataFrame')
                 net.set(node_ids=gdf["node_ids"], variable=gdf[value])
 
                 for radius in service_areas:
-                    count = net.aggregate(distance=radius, type="count", decay="flat")
+
+                    cnt = net.aggregate(distance=radius, type="count", decay="flat")
                     sum = net.aggregate(distance=radius, type="sum", decay="flat")
                     ave = net.aggregate(distance=radius, type="ave", decay='flat')
 
-                    sample_gdf[value + '_r' + str(radius) + '_count'] = list(count.loc[sample_gdf["node_ids"]])
-                    sample_gdf[value + '_r' + str(radius) + '_sum'] = list(sum.loc[sample_gdf["node_ids"]])
-                    sample_gdf[value + '_r' + str(radius) + '_ave'] = list(ave.loc[sample_gdf["node_ids"]])
+                    sample_gdf[f"{value}_r{radius}_cnt"] = list(cnt.loc[sample_gdf["node_ids"]])
+                    sample_gdf[f"{value}_r{radius}_sum"] = list(sum.loc[sample_gdf["node_ids"]])
+                    sample_gdf[f"{value}_r{radius}_ave"] = list(ave.loc[sample_gdf["node_ids"]])
+
+                    sample_gdf.to_file(self.gpkg, layer=f'network_analysis', driver='GPKG')
 
         elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-        sample_gdf.to_file(self.gpkg, layer=sample+'_na', driver='GPKG')
-        return print('Network analysis processed in ' + str(elapsed) + ' minutes @ ' + str(datetime.datetime.now()))
+        sample_gdf.to_file(self.gpkg, layer=f'network_analysis', driver='GPKG')
+        print(f'Network analysis processed in {elapsed} minutes @ {datetime.datetime.now()}')
+
+    def network_from_polygons(self, filepath='.gpkg', layer='land_assessment_parcels', remove_islands=False,
+                              scale_factor=0.82, tolerance=4, buffer_radius=10, min_lsize=20, max_linters=0.5):
+        """
+        Input a set of polygons and generate linear networks within the center of empty spaces among features.
+
+        Params:
+        filepath (str) = Directory for the GeoDatabase (i.e.: .gdb, .gpkg) with the polygons
+        layer (str) = Polygon layer name within the GeoDatabase
+        tolerance (float) = Tolerance for edges simplification
+        buffer_radius (float) = Radius of intersection buffer for node simplification
+        """
+        s = 0
+        figname = 'hq'
+        sf = scale_factor
+
+        print(f"> Processing centerlines for {layer} from {self.gpkg}")
+        start_time = timeit.default_timer()
+
+        # Read GeoDatabase
+        gdf = gpd.read_file(filepath, layer=layer, driver='GPKG')
+        gdf.dropna(subset=['geometry'], inplace=True)
+        gdf.to_crs(epsg=self.crs, inplace=True)
+        gdf_uu = gdf.geometry.unary_union
+
+        # Extract open spaces
+        try: chull = gpd.GeoDataFrame(geometry=[self.boundary.buffer(10)], crs=gdf.crs)
+        except: chull = gpd.GeoDataFrame(geometry=[gdf_uu.convex_hull.buffer(10)], crs=gdf.crs)
+        empty = gpd.overlay(chull, gdf, how='difference')
+
+        # Export open spaces to image file
+        empty.plot()
+        plt.axis('off')
+        plt.savefig(f'{figname}.png', dpi=600)
+
+        # Create network_from_polygons from black and white raster
+        tun = 1 - pl.imread(f'{figname}.png')[..., 0]
+        skl = mp.medial_axis(tun)
+
+        # Display and save centerlines
+        image = Image.fromarray(skl)
+        image.save(f'{figname}_skltn.png')
+
+        # Load centerlines image
+        with rasterio.open(f'{figname}_skltn.png') as src:
+            blue = src.read()
+        mask = blue != 0
+
+        # Transform raster into shapely geometry (vectorize)
+        shapes = features.shapes(blue, mask=mask)
+        cl_pxl = gpd.GeoDataFrame(geometry=[Polygon(shape[0]['coordinates'][0]) for shape in shapes], crs=gdf.crs)
+
+        # Buffer polygons to form centerline polygon
+        cl_pxl_sc = gpd.GeoDataFrame(geometry=[scale(cl_pxl.buffer(-0.1).unary_union, sf, -sf, sf)], crs=gdf.crs)
+
+        # Geo reference edges based on centroids
+        raw_centr = gdf.unary_union.convex_hull.buffer(10).centroid
+        xoff = raw_centr.x - cl_pxl_sc.unary_union.convex_hull.centroid.x  # dela.centroid.x
+        yoff = raw_centr.y - cl_pxl_sc.unary_union.convex_hull.centroid.y  # dela.centroid.y
+
+        # Translate, scale down and export
+        cl_pxl_tr = gpd.GeoDataFrame(geometry=[translate(cl_pxl_sc.unary_union, xoff=xoff, yoff=yoff, zoff=0.0)], crs=gdf.crs)
+
+        # Intersect pixels and vectorized center line to identify potential nodes of the network
+        cl_b_mpol = gpd.GeoDataFrame(geometry=[cl_pxl_tr.buffer(2).unary_union], crs=gdf.crs)
+
+        # Negative buffer to find potential nodes
+        buffer_r = -2.8
+        print(f"> {len(cl_b_mpol.buffer(buffer_r).geometry[0])} potential nodes identified")
+
+        # Buffer and subtract
+        node_buffer = gpd.GeoDataFrame(
+            geometry=[pol.centroid.buffer(buffer_radius) for pol in cl_b_mpol.buffer(buffer_r).geometry[0]],
+            crs=gdf.crs)
+        difference = gpd.overlay(node_buffer, cl_b_mpol, how="difference")
+        difference['mpol_len'] = [len(mpol) if type(mpol)==type(MultiPolygon()) else 1 for mpol in difference.geometry]
+        p_nodes = difference.loc[difference['mpol_len'] > 2]
+
+        # Extract nodes that intersect more than two links
+        node = node_buffer.iloc[difference.index]
+        node['n_links'] = difference['mpol_len']
+        node = node.loc[node['n_links'] > 2].centroid
+        node = gpd.GeoDataFrame(geometry=[pol.centroid for pol in node.buffer(6).unary_union], crs=gdf.crs)
+
+        # Buffer extracted nodes
+        cl_b2 = gpd.GeoDataFrame(geometry=cl_pxl_tr.buffer(2).boundary)
+        cl_b1 = gpd.GeoDataFrame(geometry=cl_pxl_tr.buffer(1))
+        cl_b1.to_file(self.gpkg, layer=f'network_centerline')
+
+        # Subtract buffered nodes from center line polygon
+        node_b6 = gpd.GeoDataFrame(geometry=node.buffer(6), crs=gdf.crs)
+        node_b9 = gpd.GeoDataFrame(geometry=node.buffer(9), crs=gdf.crs)
+        node_b12 = gpd.GeoDataFrame(geometry=node.buffer(12), crs=gdf.crs)
+
+        # Subtract buffered nodes from centerline polygon and simplify
+        links = gpd.overlay(cl_b2, node_b6, how='difference').simplify(tolerance)
+
+        # Find link vertices (changes in direction)
+        snapping = gpd.GeoDataFrame()
+        for ln in links.geometry[0]:
+            # Extract vertices from lines and collapse close vertices
+            vertices = gpd.GeoDataFrame(geometry=[Point(coord) for coord in ln.coords], crs=gdf.crs)
+            try: vertices = gpd.GeoDataFrame(geometry=[pol.centroid for pol in vertices.buffer(buffer_radius).unary_union], crs=gdf.crs)
+            except: vertices = gpd.GeoDataFrame(geometry=vertices.buffer(buffer_radius).centroid, crs=gdf.crs)
+            # Eliminate vertices if its buffer intersects with the network_nodes
+            vertices = vertices[vertices.disjoint(node_b6.unary_union)]
+            snapping = pd.concat([snapping, vertices])
+        # Simplify and export
+        snapping.reset_index(inplace=True)
+        vertices = gpd.GeoDataFrame(geometry=[pol.centroid for pol in snapping.buffer(buffer_radius).unary_union], crs=gdf.crs)
+        vertices = vertices[vertices.disjoint(node_b12.unary_union)]
+        vertices = pd.concat([vertices, node])
+
+        # Extract and explode line segments
+        links_exploded = []
+        for ln in links.geometry[0]:
+            if type(ln) == type(MultiLineString()):
+                coords = [l.coords for l in ln]
+            else: coords = ln.coords
+            for i, coord in enumerate(coords):
+                if i < len(coords)-1: links_exploded.append(LineString([Point(coords[i]), Point(coords[i+1])]))
+        links_e = gpd.GeoDataFrame(geometry=links_exploded, crs=gdf.crs)
+
+        # Snap edges to vertices
+        lns = []
+        for ln in links_exploded:
+            p0 = Point(ln.coords[0])
+            p1 = Point(ln.coords[1])
+            np0 = nearest_points(p0, vertices.unary_union)[1]
+            np1 = nearest_points(p1, vertices.unary_union)[1]
+            lns.append(LineString([np0, np1]))
+
+        # Create GeoPackage with links
+        edges = gpd.GeoDataFrame(geometry=lns, crs=gdf.crs)
+
+        # Drop links smaller than a certain length only connected to one node
+        for i, link in enumerate(edges.geometry):
+            if float(link.length) < min_lsize:
+                try: len(link.intersection(node_b6.unary_union))
+                except:
+                    edges.drop(index=i, inplace=True)
+                    print(f"> Link at index {i} have only one connected node and its length is smaller than threshold")
+
+        # Create centroid id field, drop duplicate geometry and export to GeoPackage
+        edges['cid'] = [str(ln.centroid) for ln in edges.geometry]
+        edges.drop_duplicates(['cid'], inplace=True)
+        edges.reset_index(inplace=True, drop=True)
+        edges['index'] = list(edges.index)
+        edges['azimuth'] = [math.degrees(math.atan2((ln.xy[0][1] - ln.xy[0][0]), (ln.xy[1][1] - ln.xy[1][0]))) for ln in
+                            edges.geometry]
+        edges['length'] = [ln.length for ln in edges.geometry]
+
+        vertices.reset_index(inplace=True)
+        # Iterate over vertices
+        for i, v in enumerate(vertices.geometry):
+            # Remove isolated vertices
+            if v.buffer(2).disjoint(edges.unary_union):
+                vertices.drop(index=i, inplace=True)
+
+            # Remove lines with close azimuth
+            edges_in = edges[edges.intersects(v)]
+            edges_in.reset_index(inplace=True)
+
+            if len(edges_in) == 1: pass
+            else:
+                # Compare origin, destination and centroids of each line intersecting vertices
+                for i, ln0 in enumerate(edges_in.geometry):
+                    # If iteration is in the last item set ln1 to be the first line
+                    if i == len(edges_in)-1:
+                        li1 = edges_in.at[0, 'index']
+                        ln1 = edges_in.at[0, 'geometry']
+                    else:
+                        li1 = edges_in.at[i+1, 'index']
+                        ln1 = edges_in.at[i+1, 'geometry']
+
+                    inters_bf = 4
+                    inters0 = ln0.buffer(inters_bf).intersection(ln1.buffer(inters_bf)).area/ln0.buffer(inters_bf).area
+                    inters1 = ln1.buffer(inters_bf).intersection(ln0.buffer(inters_bf)).area/ln1.buffer(inters_bf).area
+                    inters = max(inters0, inters1)
+
+                    li0 = edges_in.at[i, 'index']
+                    if inters > max_linters:
+                        if ln0.length < ln1.length:
+                            try: edges.drop(li0, axis=0, inplace=True)
+                            except: pass
+                            print(f"> Link {li0} dropped due to similarity with another edge above threshold {max_linters}")
+                        else:
+                            try: edges.drop(li1, axis=0, inplace=True)
+                            except: pass
+                            print(f"> Link {li1} dropped due to similarity with another edge above threshold {max_linters}")
+
+        # Remove nodes that are not intersections
+        edges_b2 = gpd.GeoDataFrame(geometry=[edges.buffer(2).unary_union])
+        difference = gpd.overlay(node_b6, edges_b2, how="difference")
+        difference['mpol_len'] = [len(mpol) if type(mpol)==type(MultiPolygon()) else 1 for mpol in difference.geometry]
+        node = node.loc[difference['mpol_len'] > 2]
+        node.to_file(self.gpkg, layer='network_nodes')
+
+        # Remove islands
+        if remove_islands: edges = edges[edges.intersects(node.unary_union)]
+
+        # Export links and vertices
+        edges.to_file(self.gpkg, driver='GPKG', layer=f'network_links')
+        vertices.to_file(self.gpkg, layer='network_vertices')
+
+        elapsed = round((timeit.default_timer() - start_time) / 60, 1)
+        return print(f"Centerlines processed in {elapsed} minutes @ {datetime.datetime.now()}")
 
     # Spatial analysis
     def set_parameters(self, service_areas, unit='lda', samples=None, max_area=7000000, elab_name='Sunset', bckp=True,
                        layer='Optional GeoPackage layer to analyze', buffer_type='circular'):
         # Load GeoDataFrame and assign layer name for LDA
         if unit == 'lda':
-            gdf = self.LDAs.loc[self.LDAs.geometry.area < max_area]
+            gdf = self.DAs.loc[self.DAs.geometry.area < max_area]
             layer = 'land_dissemination_area'
 
         # Pre process database for elementslab 1600x1600m 'Sandbox'
@@ -496,21 +577,21 @@ class City:
             self.gpkg = elab_name+'.gpkg'
             if 'PRCLS' in layer:
                 nodes_gdf = gpd.read_file(self.gpkg, layer='network_intersections')
-                edges_gdf = gpd.read_file(self.gpkg, layer='network_streets')
+                links_gdf = gpd.read_file(self.gpkg, layer='network_streets')
                 cycling_gdf = gpd.read_file(self.gpkg, layer='network_cycling')
                 if '2020' in layer:
                     self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2020'] == 1]
-                    self.edges = edges_gdf.loc[edges_gdf['new'] == 0]
+                    self.links = links_gdf.loc[links_gdf['new'] == 0]
                     self.cycling = cycling_gdf.loc[cycling_gdf['year'] == '2020-01-01']
                     self.cycling['type'] = self.cycling['type2020']
                     self.cycling.reset_index(inplace=True)
                 elif '2050' in layer:
                     self.nodes = nodes_gdf.loc[nodes_gdf['ctrld2050'] == 1]
-                    self.edges = edges_gdf
+                    self.links = links_gdf
                     self.cycling = cycling_gdf
                     self.cycling['type'] = cycling_gdf['type2050']
-            self.parcels = gpd.read_file(self.gpkg, layer=layer)
-            self.parcels.crs = {'init': 'epsg:26910'}
+            self.properties = gpd.read_file(self.gpkg, layer=layer)
+            self.properties.crs = {'init': 'epsg:26910'}
 
             # Reclassify land uses and create bedroom and bathroom columns
             uses = {'residential': ['RS_SF_D', 'RS_SF_A', 'RS_MF_L', 'RS_MF_H'],
@@ -518,22 +599,22 @@ class City:
                     'civic': ['CV'],
                     'green': ['OS']}
             new_uses = []
-            index = list(self.parcels.columns).index("LANDUSE")
+            index = list(self.properties.columns).index("LANDUSE")
             all_prim_uses = [item for sublist in list(uses.values()) for item in sublist]
-            for row in self.parcels.iterrows():
+            for row in self.properties.iterrows():
                 for key, value in uses.items():
                     if row[1]['LANDUSE'] in value:
                         new_uses.append(key)
                 if row[1]['LANDUSE'] not in all_prim_uses:
                     new_uses.append(row[1]['LANDUSE'])
-            self.parcels['elab_use'] = new_uses
-            self.parcels['PRIMARY_ACTUAL_USE'] = self.parcels['LANDUSE']
-            self.parcels['NUMBER_OF_BEDROOMS'] = 2
-            self.parcels['NUMBER_OF_BATHROOMS'] = 1
+            self.properties['elab_use'] = new_uses
+            self.properties['PRIMARY_ACTUAL_USE'] = self.properties['LANDUSE']
+            self.properties['NUMBER_OF_BEDROOMS'] = 2
+            self.properties['NUMBER_OF_BATHROOMS'] = 1
 
             # Define GeoDataFrame
-            # gdf = gpd.GeoDataFrame(geometry=self.parcels.unary_union.convex_hull)
-            gdf = self.parcels[['OBJECTID', 'geometry']]
+            # gdf = gpd.GeoDataFrame(geometry=self.properties.unary_union.convex_hull)
+            gdf = self.properties[['OBJECTID', 'geometry']]
             gdf.crs = {'init': 'epsg:26910'}
         else: gdf = None
 
@@ -666,10 +747,10 @@ class City:
         start_time = timeit.default_timer()
 
         # Drop index columns from previous processing
-        if 'index_right' in self.parcels.columns:
-            self.parcels.drop('index_right', axis=1, inplace=True)
-        if 'index_left' in self.parcels.columns:
-            self.parcels.drop('index_left', axis=1, inplace=True)
+        if 'index_right' in self.properties.columns:
+            self.properties.drop('index_right', axis=1, inplace=True)
+        if 'index_left' in self.properties.columns:
+            self.properties.drop('index_left', axis=1, inplace=True)
 
         # Create empty dictionaries and lists
         parc_den = {}
@@ -697,7 +778,7 @@ class City:
             if 'index_left' in geom.columns:
                 geom.drop('index_left', axis=1, inplace=True)
 
-            jgdf = gpd.sjoin(geom, self.parcels, how='right', op="intersects")
+            jgdf = gpd.sjoin(geom, self.properties, how='right', op="intersects")
             for id in range(len(gdf)):
                 fgdf = jgdf.loc[(jgdf['index_left'] == id)]
                 if len(fgdf) == 0:
@@ -757,10 +838,10 @@ class City:
         start_time = timeit.default_timer()
 
         # Drop index columns from previous processing
-        if 'index_right' in self.parcels.columns:
-            self.parcels.drop('index_right', axis=1, inplace=True)
-        if 'index_left' in self.parcels.columns:
-            self.parcels.drop('index_left', axis=1, inplace=True)
+        if 'index_right' in self.properties.columns:
+            self.properties.drop('index_right', axis=1, inplace=True)
+        if 'index_left' in self.properties.columns:
+            self.properties.drop('index_left', axis=1, inplace=True)
 
         # Create empty dictionaries and lists
         use_div = {}
@@ -779,7 +860,7 @@ class City:
             if 'index_left' in geom.columns:
                 geom.drop('index_left', axis=1, inplace=True)
 
-            jgdf = gpd.sjoin(geom, self.parcels, how='right', op="intersects")
+            jgdf = gpd.sjoin(geom, self.properties, how='right', op="intersects")
             for id in range(len(gdf)):
                 fgdf = jgdf.loc[(jgdf['index_left'] == id)]
                 if len(fgdf) == 0:
@@ -821,8 +902,8 @@ class City:
         elapsed = round((timeit.default_timer() - start_time) / 60, 1)
         return print('Diversity indicators processed in ' + str(elapsed) + ' minutes @ ' + str(datetime.datetime.now()))
 
-    def street_network_indicators(self, net_tolerance=10):
-        # Define GeoDataframe sample unit
+    def street_network_indicators(self, net_simperance=10):
+        # Define GeoDataframe sample_layer unit
         gdf = self.params['gdf']
         layer = self.params['layer']
         service_areas = self.params['service_areas']
@@ -844,7 +925,7 @@ class City:
             for pol in geom.geometry:
                 nodes_w = self.nodes[self.nodes.geometry.within(pol)]
                 try:
-                    nodes_w = nodes_w.geometry.buffer(net_tolerance).unary_union
+                    nodes_w = nodes_w.geometry.buffer(net_simperance).unary_union
                     len_nodes_w = len(nodes_w)
                     if len(nodes_w) == 0:
                         len_nodes_w = 1
@@ -852,7 +933,7 @@ class City:
                     exceptions.append('exception')
                     len_nodes_w = 1
                 intrs_den[key].append(round(len_nodes_w / (pol.area / 10000), 2))
-                edges_w = self.edges[self.edges.geometry.within(pol)]
+                edges_w = self.links[self.links.geometry.within(pol)]
                 len_edges_w = len(edges_w)
                 if len(edges_w) == 0:
                     len_edges_w = 1
@@ -1005,12 +1086,83 @@ class City:
 
         return
 
-    # Export results
+    def network_report(self):
+        nodes_gdf = gpd.read_file(self.gpkg, layer='network_nodes')
+        links_gdf = gpd.read_file(self.gpkg, layer='network_links')
+
+        # Setup directory parameters
+        save_dir = f"{self.directory}Reports/"
+        if 'Reports' in os.listdir(self.directory): pass
+        else: os.mkdir(save_dir)
+        if self.municipality in os.listdir(save_dir): pass
+        else: os.mkdir(f"{save_dir}{self.municipality}")
+
+        # Calculate boundary area
+        df = pd.DataFrame()
+        try:
+            self.boundary = self.boundary.to_crs(3157)
+            bounds = self.boundary.area[0]/10000
+        except:
+            print(f'No boundary found, using convex hull')
+            nodes_gdf.crs = 3157
+            links_gdf.crs = 3157
+            bounds = links_gdf.unary_union.convex_hull.area/10000
+        print(bounds)
+
+        links_gdf_bf = gpd.GeoDataFrame(geometry=[links_gdf.buffer(1).unary_union])
+        nodes_gdf_bf = gpd.GeoDataFrame(geometry=[nodes_gdf.buffer(7).unary_union])
+        links_gdf_sf = gpd.GeoDataFrame(geometry=[l for l in gpd.overlay(links_gdf_bf, nodes_gdf_bf, how='difference').geometry[0]])
+
+        # Calculate basic network indicators
+        df['Area'] = [format(bounds, '.2f')]
+        df['Node count'] = [format(len(nodes_gdf), '.2f')]
+        df['Link count'] = [format(len(links_gdf_sf), '.2f')]
+        df['Node Density (nodes/ha)'] = [format(len(nodes_gdf)/bounds, '.2f')]
+        df['Link Density (links/ha)'] = [format(len(links_gdf_sf)/bounds, '.2f')]
+        df['Link-Node Ratio (count)'] = [format(len(links_gdf_sf)/len(nodes_gdf), '.2f')]
+        df['Average Link Length (meters)'] = [format(sum([(ln.area) for ln in links_gdf_sf.geometry])/len(links_gdf_sf), '.2f')]
+        df = df.transpose()
+        df.index.name = 'Indicator'
+        df.columns = ['Measure']
+
+        # Define image properties
+        fig, (ax0, ax1) = plt.subplots(2, 1, gridspec_kw={'height_ratios': [6, 1]})
+        fig.set_size_inches(7.5, 7.5)
+        ax0.axis('off')
+        ax1.axis('off')
+
+        # Plot map and table
+        ax0.set_title(f'Network Indicators - {self.municipality}')
+        links_gdf.buffer(4).plot(ax=ax0, facecolor='black', linewidth=0.5, linestyle='solid')
+        nodes_gdf.buffer(8).plot(ax=ax0, edgecolor='black', facecolor='white', linewidth=0.5, linestyle='solid')
+        ax1.table(
+            cellText=df.values,
+            colLabels=df.columns,
+            colWidths=[0.1],
+            rowLabels=df.index,
+            loc='right',
+            edges='horizontal')
+
+        # Setup and save figure
+        plt.savefig(f"{save_dir}{self.municipality}.png", dpi=300)
+
+        # Plot centrality measures if exists
+        if 'betweenness' in links_gdf.columns:
+            links_gdf.plot(column='betweenness', cmap='viridis_r', legend=True)
+            fig.set_size_inches(7.5, 7.5)
+            plt.axis('off')
+            plt.title(f'Betweenness - {self.municipality}')
+            plt.savefig(f"{save_dir}{self.municipality}_bt.png", dpi=300)
+
+        df['Measure'] = pd.to_numeric(df['Measure'])
+        print(f"Report successfully saved at {self.directory}")
+        return df
+
     def export_map(self):
         
         # Process geometry
-        boundaries = self.LDAs.geometry.boundary
-        centroids = gpd.GeoDataFrame(geometry=self.LDAs.geometry.centroid)
+        boundaries = self.DAs.geometry.boundary
+        centroids = gpd.GeoDataFrame(geometry=self.DAs.geometry.centroid)
         buffers = {'radius': [], 'geometry': []}
         for radius in self.params['service_areas']:
             for geom in centroids.geometry.buffer(radius):
@@ -1044,39 +1196,23 @@ class City:
         print(r)
 
     def export_destinations(self):
-        dest_gdf = self.parcels.loc[(self.parcels['elab_use'] == 'retail') |
-                                    (self.parcels['elab_use'] == 'office') |
-                                    (self.parcels['elab_use'] == 'entertainment')]
+        dest_gdf = self.properties.loc[(self.properties['elab_use'] == 'retail') |
+                                    (self.properties['elab_use'] == 'office') |
+                                    (self.properties['elab_use'] == 'entertainment')]
         dest_gdf['geometry'] = dest_gdf.geometry.centroid
         dest_gdf.drop_duplicates('geometry')
         dest_gdf.to_file(self.directory+'Shapefiles/'+self.municipality+' - Destinations.shp', driver='ESRI Shapefile')
         return self
 
     def export_parcels(self):
-        gdf = self.parcels
+        gdf = self.properties
         gdf.to_file('Shapefiles/' + self.params['layer'], driver='ESRI Shapefile')
         for col in gdf.columns:
-            if str(type(gdf[col][0])) == "<class 'numpy.float64'>" or str(type(gdf[col][0])) == "<class 'numpy.int64'>":
+            if str(type(gdf[col][0])) == "<class 'numpy.float64'>" or str(type(gdf[col][0])) == "<class 'numpy.int64'>" or col == "LANDUSE":
                 if sum(gdf[col]) == 0:
                     gdf.drop(col, inplace=True, axis=1)
                     print(col + ' column removed')
         gdf.to_file('Shapefiles/'+self.params['layer']+'_num', driver='ESRI Shapefile')
-        return self
-
-    def gravity(self):
-        # WIP
-        gdf = gpd.read_file(self.gpkg, layer='land_dissemination_area')
-        flows = {'origin': [], 'destination': [], 'flow': []}
-        for oid in gdf.DAUID:
-            for did in gdf.DAUID:
-                flows['origin'].append(oid)
-                flows['destination'].append(did)
-                population = gdf.loc[gdf.DAUID == oid]['pop'].reset_index(drop=True)[0]
-                destinations = gdf.loc[gdf.DAUID == did]['dest_ct_lda'].reset_index(drop=True)[0]
-                if destinations == 0: destinations = 1
-                print(str(oid)+' to '+str(did)+': '+population+' people to '+str(destinations))
-                flows['flow'].append(population * destinations)
-                print(population * destinations)
         return self
 
     def export_databases(self):
@@ -1087,6 +1223,273 @@ class City:
             gdf = gpd.read_file(self.gpkg, layer=layer)
             gdf.to_file(directory+self.municipality+' - '+layer+'.shp', driver='ESRI Shapefile')
         return self
+
+
+class BritishColumbia:
+    def __init__(self, cities):
+        self.cities = [GeoBoundary(f"{city}, British Columbia") for city in cities]
+
+    def update_databases(self, icbc=True):
+
+        # Check if ICBC crash data exists and join it from ICBC database if not
+        if icbc:
+            for city in self.cities:
+                try:
+                    city.crashes = gpd.read_file(city.gpkg, layer='network_accidents')
+                    print(city.city_name + ' ICBC data read from database')
+                except:
+                    source = 'https://public.tableau.com/profile/icbc#!/vizhome/LowerMainlandCrashes/LMDashboard'
+                    print('Adding ICBC crash data to ' + city.city_name + ' database')
+                    df = city.merge_csv(f"{city.directory}Databases/ICBC/")
+                    geometry = [Point(xy) for xy in zip(df['Longitude'], df['Latitude'])]
+                    gdf = gpd.GeoDataFrame(df, geometry=geometry)
+                    gdf.crs = 4326
+                    gdf.to_crs(epsg=city.crs, inplace=True)
+                    city.boundary.to_crs(epsg=city.crs, inplace=True)
+                    matches = gpd.sjoin(gdf, city.boundary, op='within')
+                    matches.to_file(city.gpkg, layer='icbc_accidents', driver='GPKG')
+
+    # BC Assessment
+    def aggregate_bca_from_field(self, run=True, inventory_dir='', geodatabase_dir=''):
+        if run:
+            print('Geoprocessing BC Assessment data from JUROL number')
+            inventory = inventory_dir
+            df = pd.read_csv(inventory)
+
+            # Load and process Roll Number field on both datasets
+            gdf = gpd.read_file(geodatabase_dir, layer='ASSESSMENT_FABRIC')
+
+            # Reproject coordinate system
+            gdf.crs = {'init': 'epsg:3005'}
+            gdf.to_crs(epsg=self.crs, inplace=True)
+
+            # Create spatial index and perform join
+            s_index = gdf.sindex
+            gdf = gpd.sjoin(gdf, self.boundary, op='within')
+
+            # Change feature types
+            gdf['JUROL'] = gdf['JUROL'].astype(str)
+            gdf = gdf[gdf.geometry.area > 71]
+            df['JUR'] = df['JUR'].astype(int).astype(str)
+            df['ROLL_NUM'] = df['ROLL_NUM'].astype(str)
+            df['JUROL'] = df['JUR'] + df['ROLL_NUM']
+            print(f'BCA spatial layer loaded with {len(gdf)} parcels')
+
+            # Merge by JUROL field
+            merged = pd.merge(gdf, df, on='JUROL')
+            full_gdfs = {'0z': merged}
+            print(f": {len(full_gdfs['0z'])}")
+
+            # Test merge with variations of JUROL
+            for i in range(1, 7):
+                strings = []
+                for n in range(i):
+                    strings.append('0')
+                string = str(''.join(strings))
+                df[string + 'z'] = string
+                df['JUROL'] = df['JUR'] + string + df['ROLL_NUM']
+                full_gdf = pd.merge(gdf, df, on='JUROL')
+                full_gdf.drop([string + 'z'], axis=1)
+                if len(full_gdf) > 0:
+                    full_gdfs[str(i) + 'z'] = full_gdf
+                print(f"string: {len(full_gdf)}")
+
+            # Merge and export spatial and non-spatial datasets
+            out_gdf = pd.concat(full_gdfs.values(), ignore_index=True)
+            print(len(out_gdf))
+
+            # Reclassify land uses for BC Assessment data
+            uses = {
+                'residential': ['000 - Single Family Dwelling', '030 - Strata-Lot Residence (Condominium)',
+                                '032 - Residential Dwelling with Suite',
+                                '033 - Duplex, Non-Strata Side by Side or Front / Back',
+                                '034 - Duplex, Non-Strata Up / Down', '035 - Duplex, Strata Side by Side',
+                                '036 - Duplex, Strata Front / Back', '039 - Row Housing (Single Unit Ownership)',
+                                '037 - Manufactured Home (Within Manufactured Home Park)',
+                                '038 - Manufactured Home (Not In Manufactured Home Park)',
+                                '040 - Seasonal Dwelling',
+                                '041 - Duplex, Strata Up / Down', '047 - Triplex', '049 - Fourplex',
+                                '050 - Multi-Family (Apartment Block)',
+                                '052 - Multi-Family (Garden Apartment & Row Housing)', '053 - Multi-Family (Conversion)',
+                                '054 - Multi-Family (High-Rise)', '055 - Multi-Family (Minimal Commercial)',
+                                '056 - Multi-Family (Residential Hotel)', '057 - Stratified Rental Townhouse',
+                                '058 - Stratified Rental Apartment (Frame Construction)',
+                                '059 - Stratified Rental Apartment (Hi-Rise Construction)',
+                                '060 - 2 Acres Or More (Single Family Dwelling, Duplex)', '285 - Seniors Licensed Care',
+                                '062 - 2 Acres Or More (Seasonal Dwelling)',
+                                '063 - 2 Acres Or More (Manufactured Home)',
+                                '234 - Manufactured Home Park',
+                                '286 - Seniors Independent & Assisted Living'],
+                'vacant': ['001 - Vacant Residential Less Than 2 Acres', '051 - Multi-Family (Vacant)',
+                           '061 - 2 Acres Or More (Vacant)', '201 - Vacant IC&I',
+                           '421 - Vacant', '422 - IC&I Water Lot (Vacant)',
+                           '601 - Civic, Institutional & Recreational (Vacant)'],
+                'parking': ['020 - Residential Outbuilding Only', '029 - Strata Lot (Parking Residential)',
+                            '043 - Parking (Lot Only, Paved Or Gravel-Res)', '219 - Strata Lot (Parking Commercial)',
+                            '260 - Parking (Lot Only, Paved Or Gravel-Com)', '262 - Parking Garage',
+                            '490 - Parking Lot Only (Paved Or Gravel)'],
+                'other': ['002 - Property Subject To Section 19(8)', '070 - 2 Acres Or More (Outbuilding)', '190 - Other',
+                          '200 - Store(S) And Service Commercial', '205 - Big Box', '216 - Commercial Strata-Lot',
+                          '220 - Automobile Dealership', '222 - Service Station', '224 - Self-Serve Service Station',
+                          '226 - Car Wash', '227 - Automobile Sales (Lot)', '228 - Automobile Paint Shop, Garages, Etc.',
+                          '230 - Hotel', '232 - Motel & Auto Court', '233 - Individual Strata Lot (Hotel/Motel)',
+                          '237 - Bed & Breakfast Operation 4 Or More Units',
+                          '239 - Bed & Breakfast Operation Less Than 4 Units',
+                          '240 - Greenhouses And Nurseries (Not Farm Class)', '257 - Fast Food Restaurants',
+                          '258 - Drive-In Restaurant', '288 - Sign Or Billboard Only'],
+                'retail': ['202 - Store(S) And Living Quarters', '209 - Shopping Centre (Neighbourhood)',
+                           '211 - Shopping Centre (Community)', '212 - Department Store - Stand Alone',
+                           '213 - Shopping Centre (Regional)', '214 - Retail Strip', '215 - Food Market',
+                           '225 - Convenience Store/Service Station'],
+                'entertainment': ['236 - Campground (Commercial)', '250 - Theatre Buildings',
+                                  '254 - Neighbourhood Pub', '256 - Restaurant Only',
+                                  '266 - Bowling Alley', '270 - Hall (Community, Lodge, Club, Etc.)',
+                                  '280 - Marine Facilities (Marina)',
+                                  '600 - Recreational & Cultural Buildings (Includes Curling',
+                                  '610 - Parks & Playing Fields', '612 - Golf Courses (Includes Public & Private)',
+                                  '654 - Recreational Clubs, Ski Hills',
+                                  '660 - Land Classified Recreational Used For'],
+                'civic': ['210 - Bank', '620 - Government Buildings (Includes Courthouse, Post Office',
+                          '625 - Garbage Dumps, Sanitary Fills, Sewer Lagoons, Etc.', '630 - Works Yards',
+                          '634 - Government Research Centres (Includes Nurseries &',
+                          '640 - Hospitals (Nursing Homes Refer To Commercial Section).',
+                          '642 - Cemeteries (Includes Public Or Private).',
+                          '650 - Schools & Universities, College Or Technical Schools',
+                          '652 - Churches & Bible Schools'],
+                'agriculture': ['110 - Grain & Forage', '120 - Vegetable & Truck',
+                                '150 - Beef', '170 - Poultry', '180 - Mixed'],
+                'office': ['203 - Stores And/Or Offices With Apartments', '204 - Store(S) And Offices',
+                           '208 - Office Building (Primary Use)'],
+                'industrial': ['217 - Air Space Title', '272 - Storage & Warehousing (Open)',
+                               '273 - Storage & Warehousing (Closed)', '274 - Storage & Warehousing (Cold)',
+                               '275 - Self Storage', '276 - Lumber Yard Or Building Supplies', '400 - Fruit & Vegetable',
+                               '401 - Industrial (Vacant)', '402 - Meat & Poultry', '403 - Sea Food',
+                               '404 - Dairy Products', '405 - Bakery & Biscuit Manufacturing',
+                               '406 - Confectionery Manufacturing & Sugar Processing', '408 - Brewery',
+                               '414 - Miscellaneous (Food Processing)',
+                               '416 - Planer Mills (When Separate From Sawmill)',
+                               '419 - Sash & Door',
+                               '420 - Lumber Remanufacturing (When Separate From Sawmill)',
+                               '423 - IC&I Water Lot (Improved)',
+                               '424 - Pulp & Paper Mills (Incl Fine Paper, Tissue & Asphalt Roof)',
+                               '425 - Paper Box, Paper Bag, And Other Paper Remanufacturing.', '428 - Improved',
+                               '429 - Miscellaneous (Forest And Allied Industry)',
+                               '434 - Petroleum Bulk Plants',
+                               '445 - Sand & Gravel (Vacant and Improved)',
+                               '447 - Asphalt Plants',
+                               '448 - Concrete Mixing Plants',
+                               '449 - Miscellaneous (Mining And Allied Industries)', '452 - Leather Industry',
+                               '454 - Textiles & Knitting Mills', '456 - Clothing Industry',
+                               '458 - Furniture & Fixtures Industry', '460 - Printing & Publishing Industry',
+                               '462 - Primary Metal Industries (Iron & Steel Mills,', '464 - Metal Fabricating Industries',
+                               '466 - Machinery Manufacturing (Excluding Electrical)',
+                               '470 - Electrical & Electronics Products Industry',
+                               '472 - Chemical & Chemical Products Industries', '474 - Miscellaneous & (Industrial Other)',
+                               '476 - Grain Elevators', '478 - Docks & Wharves', '500 - Railway',
+                               '505 - Marine & Navigational Facilities (Includes Ferry',
+                               '510 - Bus Company, Including Street Railway', '520 - Telephone',
+                               '530 - Telecommunications (Other Than Telephone)',
+                               '550 - Gas Distribution Systems',
+                               '560 - Water Distribution Systems',
+                               '580 - Electrical Power Systems (Including Non-Utility']
+            }
+            new_uses = []
+            index = list(out_gdf.columns).index("PRIMARY_ACTUAL_USE")
+            all_prim_uses = [item for sublist in list(uses.values()) for item in sublist]
+            for row in out_gdf.iterrows():
+                for key, value in uses.items():
+                    if row[1]['PRIMARY_ACTUAL_USE'] in value:
+                        new_uses.append(key)
+                if row[1]['PRIMARY_ACTUAL_USE'] not in all_prim_uses:
+                    new_uses.append(row[1]['PRIMARY_ACTUAL_USE'])
+            out_gdf['elab_use'] = new_uses
+
+            # Export assessment fabric layer to GeoPackage
+            out_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_fabric')
+
+            # Delete repeated parcels
+            p_gdf = out_gdf.drop_duplicates(subset=['geometry'])
+
+            # Classify parcels into categories
+            p_gdf['area'] = p_gdf.geometry.area
+            p_gdf.loc[p_gdf['area'] < 400, 'elab_size'] = '<400'
+            p_gdf.loc[(p_gdf['area'] > 400) & (p_gdf['area'] < 800), 'elab_size'] = '400><800'
+            p_gdf.loc[(p_gdf['area'] > 800) & (p_gdf['area'] < 1600), 'elab_size'] = '800><1600'
+            p_gdf.loc[(p_gdf['area'] > 1600) & (p_gdf['area'] < 3200), 'elab_size'] = '1600><3200'
+            p_gdf.loc[(p_gdf['area'] > 3200) & (p_gdf['area'] < 6400), 'elab_size'] = '3200><6400'
+            p_gdf.loc[p_gdf['area'] > 6400, 'elab_size'] = '>6400'
+
+            # Export parcel layer to GeoPackage
+            p_gdf.to_file(self.gpkg, driver='GPKG', layer='land_assessment_parcels')
+            return {'properties': out_gdf, 'parcels': p_gdf}
+
+
+class Canada:
+    def __init__(self, provinces):
+        self.provinces=provinces
+        self.cities = [province.cities for province in provinces]
+
+    def update_databases(self, census=True):
+        # Download dissemination areas from StatsCan
+        if census:
+            for province in self.provinces:
+                for city in province.cities:
+                    print(f"Downloading {city.city_name}'s dissemination area")
+                    profile_url = "https://www12.statcan.gc.ca/census-recensement/2016/dp-pd/hlt-fst/pd-pl/Tables/CompFile.cfm?Lang=Eng&T=1901&OFT=FULLCSV"
+                    boundary_url = "http://www12.statcan.gc.ca/census-recensement/2011/geo/bound-limit/files-fichiers/2016/lda_000b16a_e.zip"
+
+                    c_dir = f"{city.directory}StatsCan/"
+                    if not os.path.exists(c_dir): os.makedirs(c_dir)
+
+                    os.chdir(c_dir)
+
+                    # Get data from StatCan webpage
+                    download_file(profile_url, 'lda_profile.csv')
+                    download_file(boundary_url)
+
+                    # Open and reproject boundary file
+                    bfilename = boundary_url.split('/')[-1][:-4]
+                    archive = zipfile.ZipFile(f'{c_dir}{bfilename}.zip', 'r')
+                    archive.extractall(c_dir)
+                    census_da = gpd.read_file(f"{c_dir}{bfilename}.shp")
+                    census_da.to_crs({'init': 'epsg:26910'}, inplace=True)
+
+                    # Join DataFrames
+                    df = pd.read_csv(f'{c_dir}lda_profile.csv', encoding="ISO-8859-1")
+                    df['DAUID'] = df['Geographic code']
+                    jda = census_da.merge(df, on='DAUID')
+
+                    # Crop data to City boundary
+                    city.DAs = gpd.sjoin(jda, city.boundary)
+
+                    # Get Journey to Work data
+                    if not os.path.exists(f"{c_dir}Mobility"): os.makedirs(f"{c_dir}Mobility")
+                    os.chdir(f"{c_dir}Mobility")
+                    mob_df = pd.DataFrame()
+                    for da, csd in zip(city.DAs['DAUID'], city.DAs['CSDUID']):
+                        print(f"Downloading Journey to Work data for DA: {csd}-{da}")
+                        base_link = f'https://www12.statcan.gc.ca/census-recensement/2016/dp-pd/prof/details/download-telecharger/current-actuelle.cfm?Lang=E&Geo1=DA&Code1={da}&Geo2=CSD&Code2={csd}&B1=Journey%20to%20work&type=0&FILETYPE=CSV'
+                        try:
+                            download_file(base_link, f"{csd}-{da}.csv")
+                        except:
+                            pass
+
+                        # Preprocess Journey to Work data
+                        df = pd.read_csv(f"{csd}-{da}.csv")
+                        df = df.loc['Main mode of commuting']['Unnamed: 0']
+                        dic = {i[0]: [i[2]] for i in df.index}
+                        df = pd.DataFrame.from_dict(dic)
+                        df['DAUID'] = da
+
+                        # Append data to gdf
+                        mob_df = pd.concat([mob_df, df])
+
+                    # Join data to dissemination areas
+                    city.DAs = city.DAs.merge(mob_df, on='DAUID')
+
+                    # Save it to GeoPackage
+                    city.DAs.to_file(city.gpkg, layer='land_dissemination_area')
+                    print(f'Census dissemination area downloaded and saved at {city.gpkg}')
 
 
 class Sandbox:
@@ -1295,3 +1698,30 @@ class Sandbox:
                     print('fail :(')
             gdf.to_file(filepath, driver='GeoJSON')
             return gdf
+
+
+if __name__ == '__main__':
+    BUILD_REAL_NETWORK = False
+    BUILD_PROXY_NETWORK = False
+    NETWORK_STATS = True
+    VERSIONS = ["", '2']
+
+    real_auto = GeoBoundary(municipality=f'Hillside Quadra', crs=26910)
+    if BUILD_REAL_NETWORK: real_auto.network_from_polygons(
+        filepath="/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Hillside Quadra.gpkg",
+        layer='land_blocks', scale_factor=0.84, buffer_radius=11, max_linters=0.40)
+
+    for VERSION in VERSIONS:
+        proxy = GeoBoundary(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
+        if BUILD_PROXY_NETWORK: proxy.network_from_polygons(
+            filepath=f"/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Hillside Quadra Proxy{VERSION}.gpkg",
+            layer='land_parcels', scale_factor=0.80, buffer_radius=10, max_linters=0.25, remove_islands=False)
+
+    if NETWORK_STATS:
+        real_auto.centrality()
+        rrep = real_auto.network_report()
+        for VERSION in VERSIONS:
+            proxy = GeoBoundary(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
+            proxy.centrality()
+        prep = proxy.network_report()
+        print(rrep - prep)
