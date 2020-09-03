@@ -25,7 +25,6 @@ SOFTWARE.
 import ast
 import gc
 import glob
-import os
 import timeit
 from shutil import copyfile
 
@@ -51,10 +50,10 @@ from selenium import webdriver
 from selenium.webdriver.firefox.options import Options
 from shapely.affinity import translate, scale
 from shapely.geometry import *
-from shapely.ops import nearest_points, snap
+from shapely.ops import nearest_points
 from skimage import morphology as mp
-from sklearn.mixture import BayesianGaussianMixture
-
+from sklearn.mixture import GaussianMixture
+from skspatial import interp2d
 
 def download_file(url, filename=None):
     if filename is None: local_filename = url.split('/')[-1]
@@ -111,7 +110,7 @@ def filter_features(df, y_features, x_features=None, pval_threshold=0.05, corr_t
 
         selected_columns = x_gdf.columns  # [columns]
         x_gdf = x_gdf[selected_columns]
-        x_gdf = x_gdf.iloc[y_gdf.index]
+        x_gdf = x_gdf.loc[y_gdf.index, :]
 
         # Calculate p-values
         x = x_gdf.values
@@ -163,12 +162,15 @@ def filter_features(df, y_features, x_features=None, pval_threshold=0.05, corr_t
 
 class GeoBoundary:
     def __init__(self, municipality='City, State', crs=26910,
-                 directory='/Volumes/External/'):
+                 directory='/Volumes/Samsung_T5/Databases'):
         print(f"\nCreating GeoSpatial class {municipality}")
         self.municipality = str(municipality)
-        self.directory = directory
-        self.db_dir = f"{directory}Databases/{self.municipality}"
-        self.gpkg = f"{self.directory}Databases/{self.municipality}.gpkg"
+
+        if directory[:1] == '/': self.directory = directory
+        else: self.directory = f"{directory}/"
+
+        self.db_dir = f"{directory}/{self.municipality}"
+        self.gpkg = f"{self.directory}/{self.municipality}.gpkg"
         self.city_name = str(self.municipality).split(',')[0]
         self.crs = crs
 
@@ -320,11 +322,13 @@ class GeoBoundary:
 
             elevations = []
             for node in nodes_gdf_4326.geometry:
-                lon = node.x
-                lat = node.y
+                try: lon = node.x
+                except: lon = node[0].x
+                try: lat = node.y
+                except: lat = node[0].y
                 filename = 'N' + str(int(lat)) + 'W' + str((int(lon) * -1) + 1) + '.hgt'
                 # Extract elevation data from .hgt file and add it to list
-                elevations.append(self.elevation(f'{self.directory}/Databases/Topography/{filename}', lon, lat))
+                elevations.append(self.elevation(f'{self.directory}/Topography/{filename}', lon, lat))
 
             nodes_gdf['elevation'] = elevations
             nodes_gdf.to_file(self.gpkg, layer='network_nodes')
@@ -349,7 +353,7 @@ class GeoBoundary:
                 print(population * destinations)
         return self
 
-    def centrality(self, run=True, osm=False, dual=False, axial=False, layer='network_links'):
+    def centrality(self, run=True, osm=False, dual=False, axial=False, weighted=True, layer='network_links'):
         if run:
             rf = 3
 
@@ -359,14 +363,18 @@ class GeoBoundary:
 
             # Calculate azimuth of links
             def calculate_azimuth(df):
-                df['azimuth'] = [math.degrees(math.atan2((ln.xy[0][1] - ln.xy[0][0]), (ln.xy[1][1] - ln.xy[1][0]))) for
-                                    ln in df.geometry]
-                pos_000_090 = df['azimuth'].loc[(df['azimuth'] > 0) & (df['azimuth'] < 90)]
-                pos_090_180 = df['azimuth'].loc[(df['azimuth'] > 90) & (df['azimuth'] < 180)]
-                neg_000_090 = df['azimuth'].loc[(df['azimuth'] < 0) & (df['azimuth'] > -90)]
-                neg_090_180 = df['azimuth'].loc[(df['azimuth'] < -90)]
-                tdf = pd.concat([pos_000_090, (90 - (pos_090_180 - 90)), neg_000_090 * -1, neg_090_180 + 180])
-                df['azimuth_n'] = tdf
+                df['azimuth'] = [math.degrees(math.atan2(
+                    (ln.xy[0][1] - ln.xy[0][0]),
+                    (ln.xy[1][1] - ln.xy[1][0])
+                )) for ln in df.geometry]
+                df['azimuth_n'] = [math.degrees(math.atan2(
+                    (max(ln.xy[0][1], ln.xy[0][0]) - min(ln.xy[0][1], ln.xy[0][0])),
+                    (max(ln.xy[1][1], ln.xy[1][0]) - min(ln.xy[1][1], ln.xy[1][0]))
+                )) for ln in df.geometry]
+
+                df.loc[df['azimuth'] < -90, "azimuth"] = 180 + df['azimuth']
+                df.loc[df['azimuth'] > 90, "azimuth"] = df['azimuth'] - 180
+
                 return df
 
             if osm:
@@ -395,7 +403,7 @@ class GeoBoundary:
 
                     if (len(orig_gdf) > 0) & (len(dest_gdf) > 0) & (o_osmid != d_osmid):
                         azim = links.at[i, 'azimuth_n']
-
+                        links = links.fillna(0)
                         links_ids.append(i)
 
                         # Get destination gdf
@@ -421,20 +429,20 @@ class GeoBoundary:
 
                         # Calculate indicators
                         straightness = land_length / topo_length
-                        # connectivity = len(c_links)
+                        connectivity = len(connected_links)
 
                         # Calculate azimuth similarity
                         diff = [max([cl, azim]) - min([cl, azim]) for cl in connected_links['azimuth_n']]
                         ave_ang_diff = sum(diff)/len(diff)
 
-                        # tol = 45
-                        # tolerable = [d for d in diff if d < tol]
-                        # similarity = len(tolerable) / len(c_links)
-
                         if straightness > 1.57: ave_ang_diff = 90
 
-                        w = (straightness * ave_ang_diff * land_length)
-                        weights.append(w)
+                        if weighted:
+                            w = (straightness * ave_ang_diff * land_length)
+                            if w > 0: weights.append(w)
+                            else: weights.append(1)
+                        else: weights.append(1)
+
                         g_edges.append([int(o_id), int(d_id)])
                     else: links = links.drop(index=i)
                 g = osm_g
@@ -535,28 +543,36 @@ class GeoBoundary:
                 links = calculate_azimuth(links)
                 links = links.reset_index()
 
-                n_clusters = 9
+                n_clusters = 8
                 print(f"> Clustering segments into {n_clusters} clusters based on azimuth")
-                bgm = BayesianGaussianMixture(n_clusters,
-                    weight_concentration_prior_type='dirichlet_process',
-                    weight_concentration_prior=0.001
+                bgm = GaussianMixture(
+                    n_components=n_clusters,
+                    # weight_concentration_prior_type='dirichlet_process',
+                    # weight_concentration_prior=0.001
                 )
-                bgm.fit(links.azimuth_n.values.reshape(-1,1))
-                links['axial_labels'] = bgm.predict(links.azimuth_n.values.reshape(-1,1))
+                to_cluster = links.loc[:, ['azimuth', 'azimuth_n']]
+                bgm.fit(to_cluster)
+                links['axial_labels'] = bgm.predict(to_cluster)
+                links.to_file(self.gpkg, layer='network_axial_ln', driver='GPKG')
 
                 print("> Isolating geometries to create axial-like lines")
                 clusters = [links.loc[links.axial_labels == i] for i in links['axial_labels'].unique()]
 
                 print(f"> Buffering and iterating over multi geometries (!!!)")
-                mpols = [df.buffer(2).unary_union for df in clusters]
+                buffer_r = 5
+                mpols = [df.buffer(buffer_r).unary_union for df in clusters]
                 geoms = []
                 for mpol in mpols:
-                    for pol in mpol:
-                        geoms.append(pol)
+                    if mpol.__class__.__name__ == 'Polygon':
+                        geoms.append(mpol)
+                    else:
+                        for pol in mpol:
+                            geoms.append(pol)
 
                 print("> Creating axial GeoDataFrame")
                 axial_gdf = gpd.GeoDataFrame(geometry=geoms)
                 axial_gdf = axial_gdf.reset_index()
+                axial_gdf.to_file(self.gpkg, layer='network_axial', driver='GPKG')
 
                 g = Graph(directed=True)
                 for i, pol in enumerate(axial_gdf.geometry):
@@ -564,7 +580,7 @@ class GeoBoundary:
                     v.index = i
 
                 axial_gdf['id'] = axial_gdf.index
-                axial_gdf['axial_length'] = axial_gdf.area/2
+                axial_gdf['axial_length'] = axial_gdf.area/buffer_r
 
                 print("> Creating spatial index")
                 idx = index.Index()
@@ -594,13 +610,15 @@ class GeoBoundary:
 
             if osm:
                 # Log normalization
-                print("> Normalizing weights")
-                log = False
-                if log:
-                    weights_n = np.log(weights)
-                else:
-                    weights_n = weights
-                weights_n = [(x - min(weights_n)) / (max(weights_n) - min(weights_n)) for x in weights_n]
+                if weighted:
+                    print("> Normalizing weights")
+                    log = False
+                    if log:
+                        weights_n = np.log(weights)
+                    else:
+                        weights_n = weights
+                    weights_n = [(x - min(weights_n)) / (max(weights_n) - min(weights_n)) for x in weights_n]
+                else: weights_n = weights
 
                 print("> Appending weights to graph list")
                 for edge, w in zip(g_edges, weights_n):
@@ -608,19 +626,15 @@ class GeoBoundary:
 
             straightness = g.new_edge_property("double")
             edge_properties = [straightness]
-            print("> All links and weights listed, creating graph")
             g.add_edge_list(g_edges, eprops=edge_properties)
 
-            print("> Graph successfully created, calculating centrality measures")
             btw = betweenness(g, weight=straightness)
             clo = closeness(g, weight=straightness)
             prk = pagerank(g, weight=straightness)
-            cpd = central_point_dominance(g, weight=straightness)
             egv = eigenvector(g, weight=straightness)
             ktz = katz(g, weight=straightness)
             hts = hits(g, weight=straightness)
-            egt = eigentrust(g, weight=straightness)
-            tts = trust_transitivity(g, weight=straightness)
+
             print("> Centrality measures processed, cleaning and normalizing results")
 
             def clean(col):
@@ -658,13 +672,39 @@ class GeoBoundary:
                 links.to_file(self.gpkg, layer='network_simplified')
 
             if axial:
+                axial_gdf['axial_degree'] = g.degree_property_map('total').get_array()
                 axial_gdf['axial_closeness'] = clo.get_array()
+                axial_gdf['axial_pagerank'] = prk.get_array()
+                axial_gdf['axial_eigenvector'] = egv[1].get_array()
+                axial_gdf['axial_katz'] = ktz.get_array()
+                axial_gdf['axial_hits1'] = hts[1].get_array()
+                axial_gdf['axial_hits2'] = hts[2].get_array()
                 axial_gdf['axial_betweenness'] = btw[0].get_array()
-
                 axial_gdf['axial_closeness'] = clean(axial_gdf['axial_closeness'])
                 axial_gdf['axial_betweenness'] = clean(axial_gdf['axial_betweenness'])
                 axial_gdf['axial_n_betweenness'] = np.log(axial_gdf['axial_betweenness'])
                 axial_gdf['axial_n_betweenness'] = clean(axial_gdf['axial_n_betweenness'])
+
+                """
+                # Multipart to single part
+                source = axial_gdf.unary_union
+                geoms = []
+                for multi in source:
+                    polygon_shape = shape(multi['geometry'])
+                    if isinstance(polygon_shape, geometry.Polygon):
+                        # Write the Polygon feature
+                        geoms.append(mapping(polygon_shape))
+                    elif isinstance(polygon_shape, geometry.MultiPolygon):
+                        # Extract each Polygon feature
+                        for poly in polygon_shape:
+                            # Write the Polygon feature
+                            geoms.append(mapping(poly))
+                    else: raise ValueError('Unhandled geometry type: {}'.format(polygon_shape))
+
+                un_gdf = gpd.GeoDataFrame(geometry=geoms)
+                un_gdf['area'] = un_gdf.area
+                axial_gdf = gpd.overlay(axial_gdf, un_gdf.sort_values(by='area', ascending=False).head(1))
+                """
 
                 axial_gdf.crs = links.crs
                 try: axial_gdf.to_file(self.gpkg, layer='network_axial')
@@ -674,18 +714,24 @@ class GeoBoundary:
             print(f"Centrality measures processed in {elapsed} minutes")
             return links
 
-    def network_analysis(self, sample_layer, aggregated_layers, service_areas,
-        decays=None, prefix='', run=True, filter_min=None, keep=None, feature_layer='network_analysis_features'):
+    def network_analysis(self, sample_layer, aggregated_layers, service_areas, prefix='',
+        decays=None, col_prefix='', file_prefix='', run=True, filter_min=None, keep=None, feature_layer='network_analysis_features'):
         """
         Given a layer of spatial features, it aggregates data from its surroundings using network service areas
 
         :param sample_layer: (str) Sample features to be analyzed, ex: 'lda' or 'parcel'.
         :param aggregated_layers: (dict) Layers and columns to aggregate data, ex: {'lda':["walk"], 'parcel':["area"]}
         :param service_areas: (list) Buffer to aggregate from each sample_layer feature[400, 800, 1600]
+        :param decays: (list) Types of distance-decay function - flat, linear or both
         :return:
         """
 
         if run:
+            if (col_prefix == '') and (file_prefix == ''):
+                col_prefix = prefix
+                file_prefix = prefix
+
+            if decays is None: decays = ['flat']
             start_time = timeit.default_timer()
             if keep is None: keep = ['geometry']
 
@@ -695,28 +741,20 @@ class GeoBoundary:
             sample_gdf.columns = [col_name.lower() for col_name in sample_gdf.columns]
 
             orig_n = len(sample_gdf.geometry)
-            print(f'> Network analysis for {orig_n} geometries at {service_areas} buffer radius in {self.city_name}')
+            print(f'\n> Network analysis for {orig_n} geometries at {service_areas} buffer radius in {self.city_name}')
 
             # Load data
             nodes = self.nodes
             edges = self.links
             print(nodes.head(3))
             print(edges.head(3))
-            nodes.index = nodes['osmid']
+            nodes.index = list(nodes['osmid'].astype(int))
+            edges["from"] = pd.to_numeric(edges["from"])
+            edges["to"] = pd.to_numeric(edges["to"])
 
             # Read and reproject network GeoDataFrames
             nodes = nodes.to_crs(epsg=self.crs)
             edges = edges.to_crs(epsg=self.crs)
-
-            # Create pandana network
-            net = pdna.Network(nodes.geometry.x,
-                               nodes.geometry.y,
-                               edges["from"],
-                               edges["to"],
-                               edges[["length"]],
-                               twoway=True)
-            print(net)
-            net.precompute(max(service_areas))
 
             # Filter data
             if filter_min is not None:
@@ -724,60 +762,79 @@ class GeoBoundary:
                     try:
                         sample_gdf = sample_gdf[sample_gdf[col] > min_value]
                         print(f"> Filters reduced number of samples from {orig_n} to {len(sample_gdf)}")
-                    except: print("!!! Column filter has failed !!!")
+                    except:
+                        print("!!! Column filter has failed !!!")
             sample_gdf = sample_gdf.reset_index(drop=True)
 
-            x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
-            sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
-            cols = keep+["node_ids"]
-            [print(f"!!! {col} not found in {sample_layer} !!!") for col in cols if col not in sample_gdf.columns]
-            sample_gdf = sample_gdf.loc[:, cols]
+            for radius in service_areas:
 
-            buffers = {}
-            for key, values in aggregated_layers.items():
-                values = [f"{key}_ct"]+values
-                gdf = gpd.read_file(self.gpkg, layer=key)
-                gdf.columns = [col_name.lower() for col_name in gdf.columns]
-                try: gdf.to_crs(epsg=self.crs, inplace=True)
-                except: gdf.crs = self.crs
+                edges['from'] = edges['from'].astype(int)
+                edges['to'] = edges['to'].astype(int)
+                edges['length'] = edges['length'].astype(float)
+                edges['length'] = edges['length'].astype(int)
 
-                # Filter valid geometries
-                try: gdf['geometry'] = gdf['geometry'][gdf.geometry.is_valid]
-                except: pass
-                gdf = gdf.dropna(subset=['geometry'])
+                print(f"> Creating network with {len(nodes)} intersections and {len(edges)} links")
+                # Create pandana network
+                net = pdna.Network(nodes.geometry.x,
+                                   nodes.geometry.y,
+                                   edges["from"],
+                                   edges["to"],
+                                   edges[["length"]].astype(int),
+                                   twoway=True)
+                print(net)
+                net.precompute(radius)
 
-                # Get ids
-                x, y = gdf.centroid.x, gdf.centroid.y
-                gdf["node_ids"] = net.get_node_ids(x.values, y.values)
-                gdf[f"{key}_ct"] = 1
-                print(f"> Filtering {values} from {key}")
-                try: gdf = gdf.loc[:, values+["node_ids"]]
-                except: print(f"> One or more column(s) {values} not found on the {key} GeoDataFrame")
+                x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
+                sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
+                # cols = keep + ["node_ids"]
+                # [print(f"!!! {col} not found in {sample_layer} !!!") for col in cols if col not in sample_gdf.columns]
+                # sample_gdf = sample_gdf.loc[:, cols]
 
-                # Try to convert to numeric
-                uniques = {}
-                for value in values:
-                    if str(type(gdf[value])) == "<class 'pandas.core.frame.DataFrame'>": series = gdf[value].iloc[:,0]
-                    else: series = gdf[value]
-                    try: series = pd.to_numeric(series)
-                    except:
-                        uniques[value] = []
-                        unique = series.unique()
-                        for item in series.unique():
-                            gdf.loc[series == item, item] = 1
-                            gdf.loc[series != item, item] = 0
-                            values.append(item)
-                            uniques[value].append(item)
-                        values.remove(value)
+                buffers = {}
+                for key, values in aggregated_layers.items():
+                    values = [f"{key}_ct"]+values
+                    gdf = gpd.read_file(self.gpkg, layer=key)
+                    gdf.columns = [col_name.lower() for col_name in gdf.columns]
+                    try: gdf.to_crs(epsg=self.crs, inplace=True)
+                    except: gdf.crs = self.crs
 
-                for value in values:
-                    print(f'> Processing {value} column from {key} GeoDataFrame')
-                    try:
-                        if str(type(gdf[value])) == "<class 'pandas.core.frame.DataFrame'>": series = gdf[value].iloc[:, 0]
+                    # Filter valid geometries
+                    try: gdf['geometry'] = gdf['geometry'][gdf.geometry.is_valid]
+                    except: pass
+                    len_before = len(gdf)
+                    gdf = gdf.dropna(subset=['geometry'])
+                    print(f"> Removed {len_before - len(gdf)} samples with invalid geometry")
+
+                    # Get ids
+                    x, y = gdf.centroid.x, gdf.centroid.y
+                    gdf["node_ids"] = net.get_node_ids(x.values, y.values)
+                    gdf[f"{key}_ct"] = 1
+                    print(f"> Filtering {values} from {key} on radius {radius}")
+                    try: gdf = gdf.loc[:, values+["node_ids"]]
+                    except: print(f"> One or more column(s) {values} not found on the {key} GeoDataFrame")
+
+                    # Try to convert to numeric
+                    uniques = {}
+                    for value in values:
+                        if str(type(gdf[value])) == "<class 'pandas.core.frame.DataFrame'>": series = gdf[value].iloc[:,0]
                         else: series = gdf[value]
-                        net.set(node_ids=gdf["node_ids"], variable=series)
+                        try: series = pd.to_numeric(series)
+                        except:
+                            uniques[value] = []
+                            for item in series.unique():
+                                gdf.loc[series == item, item] = 1
+                                gdf.loc[series != item, item] = 0
+                                values.append(item)
+                                uniques[value].append(item)
+                            values.remove(value)
 
-                        for radius in service_areas:
+                    for value in values:
+                        print(f'> Processing {value} column from {key} layer for {file_prefix} analysis in {self.city_name}')
+                        try:
+                            if str(type(gdf[value])) == "<class 'pandas.core.frame.DataFrame'>": series = gdf[value].iloc[:, 0]
+                            else: series = gdf[value]
+                            net.set(node_ids=gdf["node_ids"], variable=series)
+
                             for decay in decays:
                                 cnt = net.aggregate(distance=radius, type="count", decay=decay)
                                 adt = net.aggregate(distance=radius, type="sum", decay=decay)
@@ -786,35 +843,32 @@ class GeoBoundary:
                                 max_agg = net.aggregate(distance=radius, type="max", decay=decay)
                                 rng = max_agg - min_agg
 
-                                sample_gdf[f"{prefix}_{key}_r{radius}_cnt_{decay[0]}"] = list(cnt.loc[sample_gdf["node_ids"]])
-                                sample_gdf[f"{prefix}_{value}_r{radius}_sum_{decay[0]}"] = list(adt.loc[sample_gdf["node_ids"]])
-                                sample_gdf[f"{prefix}_{value}_r{radius}_ave_{decay[0]}"] = list(ave.loc[sample_gdf["node_ids"]])
-                                sample_gdf[f"{prefix}_{value}_r{radius}_rng_{decay[0]}"] = list(rng.loc[sample_gdf['node_ids']])
+                                sample_gdf[f"{col_prefix}_{key}_r{radius}_cnt_{decay[0]}"] = list(cnt.loc[sample_gdf["node_ids"]])
+                                sample_gdf[f"{col_prefix}_{value}_r{radius}_sum_{decay[0]}"] = list(adt.loc[sample_gdf["node_ids"]])
+                                sample_gdf[f"{col_prefix}_{value}_r{radius}_ave_{decay[0]}"] = list(ave.loc[sample_gdf["node_ids"]])
+                                sample_gdf[f"{col_prefix}_{value}_r{radius}_rng_{decay[0]}"] = list(rng.loc[sample_gdf['node_ids']])
 
                                 gc.collect()
                             gc.collect()
-                        gc.collect()
-                    except: pass
+                        except: pass
+                    gc.collect()
 
-                # Calculate diversity index for categorical variables
-                for k, v in uniques.items():
-                    simpson = True
-                    shannon = True
-                    print(f"> Calculating diversity index for {k}")
-                    for radius in service_areas:
-                        ns = []
-                        ns_op = []
+                    # Calculate diversity index for categorical variables
+                    for k, v in uniques.items():
+                        simpson = True
+                        shannon = True
+                        print(f"> Calculating diversity index for {k}")
                         for decay in decays:
-                            categories = [f"{prefix}_{category}_r{radius}_sum_{decay[0]}" for category in v if category != "other"]
+                            categories = [f"{col_prefix}_{category}_r{radius}_sum_{decay[0]}" for category in v if category != "other"]
                             for category in categories:
-                                try: del sample_gdf[f"{prefix}_{category}_r{radius}_ave_{decay[0]}"]
+                                try: del sample_gdf[f"{col_prefix}_{category}_r{radius}_ave_{decay[0]}"]
                                 except: pass
-                                try: del sample_gdf[f"{prefix}_{category}_r{radius}_rng_{decay[0]}"]
+                                try: del sample_gdf[f"{col_prefix}_{category}_r{radius}_rng_{decay[0]}"]
                                 except: pass
                             gc.collect()
                             cat_gdf = sample_gdf.loc[:, categories]
-                            if simpson: sample_gdf[f"{prefix}_{k}_r{radius}_si_div_{decay[0]}"] = diversity.alpha_diversity('simpson', cat_gdf)
-                            if shannon: sample_gdf[f"{prefix}_{k}_r{radius}_sh_div_{decay[0]}"] = diversity.alpha_diversity('shannon', cat_gdf)
+                            if simpson: sample_gdf[f"{col_prefix}_{k}_r{radius}_si_div_{decay[0]}"] = diversity.alpha_diversity('simpson', cat_gdf)
+                            if shannon: sample_gdf[f"{col_prefix}_{k}_r{radius}_sh_div_{decay[0]}"] = diversity.alpha_diversity('shannon', cat_gdf)
 
             # Clean count columns
             for col in sample_gdf.columns:
@@ -822,10 +876,11 @@ class GeoBoundary:
                 if ('_ct_' in col) & ('_ave' in col): sample_gdf = sample_gdf.drop([col], axis=1)
                 gc.collect()
 
+            print(f"> Total number of samples reduced from {orig_n} to {len(sample_gdf)}")
             elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-            try: sample_gdf.to_file(self.gpkg, layer=f'network_analysis_{prefix}', driver='GPKG')
-            except: print("!!! Results not saved to GeoPackage !!!")
-            sample_gdf.to_file(f'{self.directory}Databases/Network/{self.municipality}_na_{prefix}.geojson', driver='GeoJSON')
+            sample_gdf.to_file(f'{self.directory}Databases/Network/{self.municipality}_{file_prefix}_na.geojson', driver='GeoJSON')
+            # try: sample_gdf.to_file(self.gpkg, layer=f'network_analysis_{prefix}', driver='GPKG', encoding="ISO-8859-1")
+            # except: print("!!! Results not saved to GeoPackage !!!")
             print(f'Network analysis processed in {elapsed} minutes @ {datetime.datetime.now()}, regressing data')
 
             # Get name of features analyzed within the service areas
@@ -838,8 +893,8 @@ class GeoBoundary:
             boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
             r_geometry = [boundary.at[0, 'geometry'].centroid for feature in r_ftr_list]
             r_features = gpd.GeoDataFrame({'features':r_ftr_list, 'geometry':r_geometry})
-            r_features.to_file(self.gpkg, layer='regression_features')
-            r_features.to_file(f'{self.directory}Databases/Network/{self.municipality}_na_reg.csv')
+            r_features.to_file(self.gpkg, layer=f'{file_prefix}_aggregated_features')
+            r_features.to_csv(f'{self.directory}Databases/Network/{self.municipality}_na_reg_{file_prefix}.csv')
 
             return sample_gdf, r_features
 
@@ -853,10 +908,17 @@ class GeoBoundary:
         layer (str) = Polygon layer name within the GeoDatabase
         tolerance (float) = Tolerance for edges simplification
         buffer_radius (float) = Radius of intersection buffer for node simplification
+
+        Layers saved in the GeoPackage:
+        network_centerline (Polygon)
+        network_nodes (Point)
+        network_links (LineString)
         """
         s = 0
         figname = 'hq'
         sf = scale_factor
+
+        if filepath == '.gpkg': filepath = self.gpkg
 
         print(f"> Processing centerlines for {layer} from {self.gpkg}")
         start_time = timeit.default_timer()
@@ -1091,23 +1153,73 @@ class GeoBoundary:
                             agg_gdf.crs = 4326
                             agg_gdf = agg_gdf.to_crs(self.crs)
 
+                        try: agg_gdf = agg_gdf.drop('index_right', axis=1)
+                        except: pass
+
                         agg_gdf[f'{layer}_ct'] = 1
                         columns = [f'{layer}_ct'] + columns
 
                         # Perform spatial join
-                        sj = gpd.sjoin(agg_gdf, sample_gdf)
+                        try: sj = gpd.sjoin(agg_gdf, sample_gdf)
+                        except: pass
+                        features = []
 
                         for col in columns:
-                            if col != f'{layer}_ct':
-                                for i in sj['index_right'].unique():
-                                    on_da = sj.loc[sj.index_right == i]
-                                    sample_gdf.at[i, f"{prefix}_{col}_count"] = len(on_da)
-                                    sample_gdf.at[i, f"{prefix}_{col}_sum"] = on_da[col].sum()
-                                    sample_gdf.at[i, f"{prefix}_{col}_mean"] = on_da[col].mean()
-                                    sample_gdf.at[i, f"{prefix}_{col}_range"] = on_da[col].max() - on_da[col].min()
-                        sample_gdf.to_file(self.gpkg, layer=sample_layer, driver='GPKG')
-                        print(f"> {sample_layer} saved on {self.city_name} GeoPackage")
-                        return sample_gdf
+                            for i in sj['index_right'].unique():
+                                on_da = sj.loc[sj.index_right == i]
+                                sample_gdf.at[i, f"{layer}_count"] = len(on_da)
+                                if sample_gdf.at[i, 'geometry'].area > 0:
+                                    sample_gdf.at[i, f"{layer}_density"] = len(on_da) / (
+                                            sample_gdf.at[i, 'geometry'].area / 10000)
+                                if col != f'{layer}_ct':
+                                    sample_gdf.at[i, f"{col}_sum"] = on_da[col].sum()
+                                    sample_gdf.at[i, f"{col}_mean"] = on_da[col].mean()
+                                    sample_gdf.at[i, f"{col}_range"] = on_da[col].max() - on_da[col].min()
+
+                            features = features + [f"{col}_{j}" for j in ['count', 'sum', 'mean', 'range', 'density']]
+
+                        if len(features) > 0:
+                            boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+                            f_geometry = [boundary.at[0, 'geometry'].centroid for feature in features]
+                            features = gpd.GeoDataFrame({'features': features, 'geometry': f_geometry})
+                            features.to_file(self.gpkg, layer=f'joined_features_{prefix}')
+                            sample_gdf = sample_gdf.loc[:, ~sample_gdf.columns.duplicated()]
+                            sample_gdf.to_file(self.gpkg, layer=f"{sample_layer}_{prefix}", driver='GPKG', encoding="ISO-8859-1")
+                            print(f"> {sample_layer} saved on {self.city_name} GeoPackage as joined_features_{prefix}")
+                        else: print(f"!!! No features joined for layer {layer} !!!")
+
+            return sample_gdf
+
+    def spatial_interpolation(self, layer, feature=None, resolution=600, run=True):
+
+        if run:
+            print(f"> Interpolating {feature} data from {layer} to {resolution}m grid")
+
+            gdf = gpd.read_file(self.gpkg, layer=layer).dropna(subset=['aqi'])
+
+            if feature is None:
+                gdf['1'] = 1
+                feature = '1'
+
+            gdf['coords'] = gdf['geometry'].apply(lambda x: x.representative_point().coords[:])
+            gdf['coords'] = [coords[0] for coords in gdf['coords']]
+            ml = interp2d(gdf, feature, res=resolution)
+
+            array = ml.knn_2D(10, weights='distance')
+
+            grid_gdf = gpd.GeoDataFrame(columns=[feature, 'geometry'], geometry='geometry')
+            geoms = []
+            value = []
+            for i, ar1 in enumerate(array):
+                for j, ar2 in enumerate(ar1):
+                    geoms.append(Point(ml.xmin + (resolution * j), ml.ymin + (resolution * i)))
+                    value.append(array[i][j])
+            grid_gdf[feature] = value
+            grid_gdf['geometry'] = geoms
+            grid_gdf.crs = self.crs
+            grid_gdf.to_file(self.gpkg, layer=f"{layer}_interp")
+
+            return print("> Data interpolated and saved")
 
     def set_parameters(self, service_areas, unit='lda', samples=None, max_area=7000000, elab_name='Sunset', bckp=True,
                        layer='Optional GeoPackage layer to analyze', buffer_type='circular'):

@@ -1,209 +1,247 @@
-import os
+import geopandas as gpd
+import numpy as np
+import pandas as pd
+from shapely.geometry import Point
+from skbio import diversity
 
-class Sandbox:
-    def __init__(self, name, geodatabase, layers):
-        self.name = name
-        self.gdb = geodatabase
-        self.directory = "../Geospatial/Databases/Sandbox/"
-        self.layers = layers
+def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
 
-    def morph_indicators(self):
-        os.chdir(self.directory + self.name)
-        for layer in self.layers:
-            model = City()
-            model.set_parameters(unit='elab_sandbox', service_areas=[400, 800, 1600], elab_name=self.name, bckp=False,
-                                 layer=layer)
-            model.density_indicators()
-            model.diversity_indicators()
-            model.street_network_indicators()
-            model.cycling_network_indicators()
-            model.export_parcels()
-        return self
+    exp = list(experiment.keys())[0]
+    yr = list(experiment.values())[0]
 
-    def morph_indic_1600(self, radius=400, population_density=True, dwelling_density=True, retail_density=True,
-                         dwelling_diversity=True, use_diversity=True, intersection_density=True):
-        # Urban design indicators using superpatch as input
-        filepath = self.directory + '/' + self.buildings + '_indicators' + str(radius) + '.geojson'
-        if os.path.exists(filepath):
-            print(filepath + ' Already Exists!')
-            return filepath
-        else:
-            # Calculate livability indexes
-            gdf = gpd.read_file(self.directory + '/' + self.buildings)
-            sindex = gdf.sindex
-            print(sindex)
-            gdf.crs = {'init': 'epsg:26910'}
-            c_hull = gdf.unary_union.convex_hull
-            # Generate 400m buffer
-            buffer = gdf.centroid.buffer(radius)
-            cl_buffers = buffer.intersection(c_hull)
-            den_pop = []
-            den_dwe = []
-            den_ret = []
-            div_use = []
-            div_dwe = []
-            inters_counts = []
-            inters_den = []
-            den_routes = []
+    loc_bdr = gpd.read_file(local_gbd.gpkg, layer='land_municipal_boundary')
+    loc_bdr = loc_bdr.to_crs(local_gbd.crs)
+    loc_bdr_b = gpd.GeoDataFrame(geometry=loc_bdr.buffer(max_na_radius))
 
-            for pol, n in zip(cl_buffers, range(len(cl_buffers))):
-                intrs = gdf.geometry.map(lambda x: x.intersects(pol))
-                filt_gdf = gdf[intrs]
-                area = pol.area
-                print(filepath + ' - iteration #' + str(n))
+    print("\n> Performing simple union for district-wide layers")
+    def rd_repr_ovr_exp(left_gpkg, right_gpkg, layer, crs):
+        gdf = gpd.read_file(left_gpkg, layer=layer)
+        try: gdf.to_crs(crs)
+        except: gdf.crs = crs
+        ovr = gpd.overlay(gdf, loc_bdr_b)
+        ovr.to_file(right_gpkg, layer=layer)
+    for lyr in ['network_nodes', 'network_axial', 'network_drive', 'network_stops']:
+        rd_repr_ovr_exp(district_gbd.gpkg, local_gbd.gpkg, layer=lyr, crs=local_gbd.crs)
 
-                # Intensity
-                # Population Density = Number of residents / Buffer area
-                if population_density:
-                    res_count = filt_gdf.res_count.sum()
-                    den_pop.append(res_count / area)
-                    print('population_density: done!')
+    print("> Joining attributes from buildings to parcels")
+    buildings = gpd.read_file(local_gbd.gpkg, layer=f'fabric_buildings_{exp}')
+    parcels2 = gpd.read_file(local_gbd.gpkg, layer=f'land_parcels_{exp}')
+    parcels2['OBJECTID'] = [i for i in range(len(parcels2))]
 
-                # Dwelling Density = Number of residential units / Buffer area
-                if dwelling_density:
-                    try:
-                        units = filt_gdf.res_units.sum()
-                    except:
-                        units = filt_gdf.n_res_unit.sum()
-                    den_dwe.append(float(units) / float(area))
-                    print('dwelling_density: done!')
+    if 'OBJECTID' not in parcels2.columns:
+        print("!!! OBJECTID column not found on parcels !!!")
 
-                # Retail Density = Footprint area of buildings that have retail in the ground floor / Buffer area
-                if retail_density:
-                    try:
-                        ret_area = filt_gdf[filt_gdf['shell_type'] == 'Retail'].Shape_Area.sum()  # Sunset
-                    except:
-                        ret_area = filt_gdf[filt_gdf['gr_fl_use'] == 'Retail'].ftprt_area.sum()  # WestBowl
-                    try:
-                        f_ret_area = filt_gdf[filt_gdf['shell_type'] == 'Food_Retail'].Shape_Area.sum()  # Sunset
-                    except:
-                        f_ret_area = filt_gdf[filt_gdf['gr_fl_use'] == 'Food_retail'].ftprt_area.sum()  # WestBowl
-                    t_ret_area = ret_area + f_ret_area
-                    den_ret.append(t_ret_area / area)
-                    print('retail_density: done!')
-
-                # Diversity
-                # Dwelling Diversity = Shannon diversity index of elementsdb cases
-                if dwelling_diversity:
-                    div_dwe.append(shannon_div(filt_gdf, 'case_name'))
-                    print('dwelling_diversity: done!')
-
-                # Land Use Diversity = Shannon diversity index of land use categories
-                if use_diversity:
-                    try:
-                        div_use.append(shannon_div(filt_gdf, 'LANDUSE'))  # Sunset
-                    except:
-                        div_use.append(shannon_div(filt_gdf, 'landuse'))  # WestBowl
-                    print('use_diversity: done!')
-
-                # Route density
-                streets_gdf = gpd.read_file(self.directory + '/' + self.street_net)
-                if radius > 600:
-                    bike_gdf = streets_gdf[streets_gdf['Bikeways'] == 1]
-                    bike_intrs = bike_gdf.geometry.map(lambda x: x.intersects(pol))
-                    den_route = sum(bike_gdf[bike_intrs].geometry.length) / area
-                else:
-                    streets_intrs = streets_gdf.geometry.map(lambda x: x.intersects(pol))
-                    den_route = sum(streets_gdf[streets_intrs].geometry.length) / area
-                print('route_density: done!')
-
-                # Intersection density
-                if intersection_density:
-                    cross_gdf = gpd.read_file(self.directory + '/' + self.inters)
-                    intersections = cross_gdf[cross_gdf.geometry.map(lambda x: x.intersects(pol))]
-                    inters_count = len(intersections)
-                    inters_den = inters_count / area
-                    print('inters_den: done!')
-
-                d = {'geom': [pol]}
-                pol_df = pd.DataFrame(data=d)
-                pol_gdf = gpd.GeoDataFrame(pol_df, geometry='geom')
-                pol_gdf.crs = {'init': 'epsg:26910'}
-                pol_gdf = pol_gdf.to_crs({'init': 'epsg:4326'})
-
-                x_centroid = pol_gdf.geometry.centroid.apply(lambda p: p.x)[0]
-                y_centroid = pol_gdf.geometry.centroid.apply(lambda p: p.y)[0]
-
-                bbox = pol_gdf.total_bounds
-                x_1 = bbox[0]
-                y_1 = bbox[1]
-                x_2 = bbox[2]
-                y_2 = bbox[3]
-
-                d = {'id': ['centr', 'pt1', 'pt2'], 'lon': [x_centroid, x_1, x_2], 'lat': [y_centroid, y_1, y_2]}
-                df = pd.DataFrame(data=d)
-                # print(df)
-
-                i = self.buildings
-                if '2020' in i:
-                    gdf['route_qlty'] = 1
-                    inters_counts.append(inters_count)
-                elif '2030' in i:
-                    gdf['route_qlty'] = 6
-                    inters_counts.append(inters_count)
-                elif '2040' in i or '2050' in i:
-                    gdf['route_qlty'] = 10
-                    inters_counts.append(inters_count + 2)
-
-                den_routes.append(den_route)
-
-            # Proximity
-            gdf = gdf.replace(9999, 1600)
-            gdf['proximity'] = 1000 / (gdf.d2bike + gdf.d2bus + gdf.d2comm + gdf.d2OS + gdf.d2CV)
-
-            # Add columns
+    # Join data from buildings to parcels
+    pcl_bdg_raw = gpd.sjoin(parcels2, buildings, how='left', lsuffix="pcl", rsuffix="bdg")
+    col2try = ["OBJECTID_pcl", "OBJECTID"]
+    pcl_bdg = None
+    while True:
+        for col in col2try:
             try:
-                gdf['experiment'] = i
-            except:
-                pass
-            try:
-                gdf['den_pop'] = den_pop
-                gdf['den_pop'] = gdf['den_pop'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['den_dwe'] = den_dwe
-                gdf['den_dwe'] = gdf['den_dwe'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['den_ret'] = den_ret
-                gdf['den_ret'] = gdf['den_ret'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['div_use'] = div_use
-                gdf['div_use'] = gdf['div_use'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['div_dwe'] = div_dwe
-                gdf['div_dwe'] = gdf['div_dwe'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['den_route'] = den_routes
-                gdf['den_route'] = gdf['den_route'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['inters_count'] = inters_counts
-                gdf['inters_count'] = gdf['inters_count'].fillna(0)
-            except:
-                pass
-            try:
-                gdf['inters_den'] = inters_den
-                gdf['inters_den'] = gdf['inters_den'].fillna(0)
-            except:
-                pass
+                pcl_bdg = pcl_bdg_raw.groupby(col)
+                break
+            except: pass
+        break
 
-            # Export
-            if os.path.exists(filepath):
-                try:
-                    os.remove(filepath)
-                    print('success :)')
-                except:
-                    print('fail :(')
-            gdf.to_file(filepath, driver='GeoJSON')
-            return gdf
+    if pcl_bdg is None:
+        print("!!! Grouped by parcel not defined !!!")
 
+    parcels2['area'] = parcels2['geometry'].area
+    parcels2["area_sqkm"] = parcels2['area'] / 1000000
+    try:
+        res_count_col = 'res_count'
+        parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+    except:
+        res_count_col = 'res_count_bdg'
+        parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+    print(f"{exp} experiment with {parcels2['population, 2016'].sum()} people")
+    parcels2.to_file(local_gbd.gpkg, layer=f"land_parcels_{exp}", driver='GPKG')
+
+    print("> Adapting parcels to dissemination area")
+    dss_are = parcels2
+    try: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+    except: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+    dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['Shape_Area']
+    try: dss_are["n_dwellings"] = pcl_bdg.sum()['n_res_unit'].values
+    except: dss_are["n_dwellings"] = pcl_bdg.sum()['res_units_bdg'].values
+
+    print("> Adapting parcels to assessment fabric")
+    ass_fab = parcels2
+    try: ass_fab["n_use"] = [u[0] for u in pcl_bdg['Landuse_pcl'].unique()]
+    except: ass_fab["n_use"] = [u[0] for u in pcl_bdg['LANDUSE_pcl'].unique()]
+    ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
+    ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
+    ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
+    ass_fab.loc[(parcels2['area'] > 800) & (parcels2['area'] < 1600), 'n_size'] = '800 to 1600'
+    ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
+    ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
+    ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
+    try: ass_fab["total_finished_area"] = (pcl_bdg.sum()['floor_area'] * pcl_bdg.mean()['maxstories']).values
+    except: ass_fab["total_finished_area"] = (pcl_bdg.sum()['floor_area_bdg'] * pcl_bdg.mean()['maxstories']).values
+    try: ass_fab["gross_building_area"] = (pcl_bdg.sum()['ftprt_area'] * pcl_bdg.mean()['maxstories']).values
+    except: ass_fab["gross_building_area"] = (pcl_bdg.sum()['Shape_Area_bdg'] * pcl_bdg.mean()['maxstories']).values
+    try:
+        for n_bedrms_col in ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg']:
+            try:
+                ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[n_bedrms_col].values
+                break
+            except: pass
+    except: pass
+
+    print("> Calculating diversity indices")
+
+    # Diversity of bedrooms
+    df_ddb = pd.DataFrame()
+    for u in range(1,5):
+        if u < 4: df_ddb[f"{u}_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] == u])]
+        elif u >= 4: df_ddb[f"4_plus_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] >= 4])]
+    dss_are["dwelling_div_bedrooms_si"] = [diversity.alpha_diversity("simpson", df_ddb)[0] for i in range(len(dss_are))]
+    dss_are["dwelling_div_bedrooms_sh"] = [diversity.alpha_diversity("shannon", df_ddb)[0] for i in range(len(dss_are))]
+
+    # # Diversity of rooms
+    # df_ddr = pd.DataFrame()
+    # buildings['n_rooms'] = buildings['n_bedrms'] + buildings['n_baths'] + 2
+    # for u in range(max(buildings['n_rooms'])):
+    #     if u <= 4: df_ddr[f"less_4_rooms"] = [len(buildings.loc[buildings['n_rooms'] <= u])]
+    #     elif (u > 4) and (u < 8): df_ddr[f"{u}_rooms"] = [len(buildings.loc[buildings['n_rooms'] == u])]
+    #     else: df_ddr[f"8_plus_rooms"] = [len(buildings.loc[buildings['n_rooms'] == u])]
+    # dss_are["dwelling_div_rooms_si"] = [diversity.alpha_diversity("simpson", df_ddr)[0] for i in range(len(dss_are))]
+    # dss_are["dwelling_div_rooms_sh"] = [diversity.alpha_diversity("shannon", df_ddr)[0] for i in range(len(dss_are))]
+
+    init_streets = gpd.read_file(local_gbd.gpkg, layer='network_links')
+    streets = init_streets
+    streets["length"] = streets.geometry.length
+    cycling = streets[streets[f"cycle_{yr}"] == 1]
+    cycling['cycle_length'] = cycling.geometry.length
+
+    print("> Joining transit frequency data")
+    stops = gpd.GeoDataFrame({
+        'geometry': [Point(geom.coords[0]) for geom in streets.geometry]
+    }, geometry='geometry')
+    stops = stops.drop_duplicates(subset=['geometry']).reset_index(drop=True)
+    bus2020 = streets[streets['bus_2020'] == 1].geometry.buffer(5).unary_union
+    freqt2040 = streets[streets['freqt_2040'] == 1].geometry.buffer(5).unary_union
+    rapid2040 = streets[streets['rapid_2040'] == 1].geometry.buffer(5).unary_union
+    for i in list(stops.index):
+        if stops.iloc[i]['geometry'].within(bus2020):
+            stops.at[i, 'frequency'] = 32  # Trips per day from 30 to 30 minutes
+        if stops.iloc[i]['geometry'].within(rapid2040):
+            stops.at[i, 'frequency'] = 48 # Trips per day from 7 to 7 minutes
+        if stops.iloc[i]['geometry'].within(freqt2040) & yr == 2040:
+            stops.at[i, 'frequency'] = 192 # Trips per day from 15 to 15 minutes
+    stops = stops.fillna(0)
+    stops = stops[stops['frequency'] > 0]
+
+    if len(streets) < len(init_streets):
+        print("!!! Streets line count smaller than initial !!!")
+
+    stops.to_file(local_gbd.gpkg, layer='network_stops', encoding='ISO-8859-1')
+    streets.to_file(local_gbd.gpkg, layer='network_links', encoding='ISO-8859-1')
+    cycling.to_file(local_gbd.gpkg, layer='network_cycle', encoding='ISO-8859-1')
+    ass_fab.to_file(local_gbd.gpkg, layer='land_assessment_fabric', encoding='ISO-8859-1')
+    parcels2.to_file(local_gbd.gpkg, layer='land_assessment_parcels', encoding='ISO-8859-1')
+    dss_are.to_file(local_gbd.gpkg, layer='land_dissemination_area', encoding='ISO-8859-1')
+
+    return local_gbd
+
+def proxy_network(local_gbd, run=True):
+    """
+    Creates to and from fields on line segments in order to perform network analysis
+    :param local_gbd: class GeoBoundary
+    :param run: boolean toggle to run function
+    """
+
+    if run:
+        print("> Updating street network connectivity")
+        streets_initial = gpd.read_file(local_gbd.gpkg, layer='network_links')
+        streets = streets_initial.reset_index(drop=True)
+
+        nodes = gpd.GeoDataFrame(columns=['geometry'])
+        for i, mg in enumerate(streets.geometry):
+            if mg.__class__.__name__ == 'LineString': mg=[mg]
+            for ln in mg:
+                ni = i * 2
+                uid = lambda t: int("".join([str(o).replace('.', '') for o in list(t)]))
+                nodes.at[ni, 'osmid'] = uid(ln.coords[0])
+                nodes.at[ni, 'geometry'] = Point(ln.coords[0])
+                nodes.at[ni + 1, 'osmid'] = uid(ln.coords[1])
+                nodes.at[ni + 1, 'geometry'] = Point(ln.coords[1])
+                streets.at[i, 'osmid'] = int(i)
+                streets.at[i, 'from'] = uid(ln.coords[0])
+                streets.at[i, 'to'] = uid(ln.coords[1])
+                streets.at[i, 'geometry'] = ln
+
+        nodes = nodes.drop_duplicates(subset='osmid', ignore_index=True)
+        old_ids = nodes.osmid.unique()
+        new_ids = [i for i in range(len(old_ids))]
+        nodes = nodes.replace(old_ids, new_ids)
+        streets = streets.replace(old_ids, new_ids)
+
+        nodes.crs = local_gbd.crs
+        streets.crs = local_gbd.crs
+
+        if len(streets_initial) < len(streets):
+            print("!!! Streets line count smaller than initial !!!")
+
+        nodes.to_file(local_gbd.gpkg, layer='network_intersections')
+        streets.to_file(local_gbd.gpkg, layer='network_links')
+
+    return local_gbd
+
+def estimate_emissions(gdf, title='', directory='/Volumes/Samsung_T5/Databases'):
+    # Iterate over each parcel to define the probability of dwellers to chose each mode
+    agents = pd.DataFrame()
+    for i in list(gdf.index):
+        if gdf.loc[i, 'population, 2016'] > 0:
+            for j in range(int(gdf.loc[i, 'population, 2016'])):
+                k = len(agents)
+                agents.at[k, 'parcel'] = i
+                agents.at[k, 'p_walk'] = gdf.loc[i, f'walk_{title}_n']
+                agents.at[k, 'p_bike'] = gdf.loc[i, f'bike_{title}_n']
+                agents.at[k, 'p_bus'] = gdf.loc[i, f'bus_{title}_n']
+                agents.at[k, 'p_drive'] = gdf.loc[i, f'drive_{title}_n']
+
+    # Randomly chose the mode of each agent based on the probabilities
+    print("> Assigning mode to each inhabitant")
+    for k in list(agents.index):
+        agents.at[k, 'mode'] = np.random.choice(
+            ['walk', 'bike', 'bus', 'drive'], 1, p=list(agents.loc[k, ['p_walk', 'p_bike', 'p_bus', 'p_drive']]))[0]
+
+    # Get number of people by mode choice by parcel
+    for p in list(gdf.index):
+        gdf.at[p, 'walkers'] = len(agents[(agents['mode'] == 'walk') & (agents['parcel'] == p)])
+        gdf.at[p, 'bikers'] = len(agents[(agents['mode'] == 'bike') & (agents['parcel'] == p)])
+        gdf.at[p, 'riders'] = len(agents[(agents['mode'] == 'bus') & (agents['parcel'] == p)])
+        gdf.at[p, 'drivers'] = len(agents[(agents['mode'] == 'drive') & (agents['parcel'] == p)])
+
+    # Load potential destinations
+    print("> Estimating travel demand")
+    crd_gdf = gpd.read_file(
+        f'{directory}/Capital Regional District, British Columbia.gpkg', layer='land_assessment_fabric')
+    d_gdf = crd_gdf[
+        (crd_gdf['n_use'] == 'retail') | (crd_gdf['n_use'] == 'office') | (crd_gdf['n_use'] == 'hospitality') |
+        (crd_gdf['n_use'] == 'civic') | (crd_gdf['n_use'] == 'entertainment')]
+    d_gdf = d_gdf.reset_index()
+
+    # # Draw a line from each parcel to all destinations
+    # for p in list(gdf.index):
+    #     gdf.iloc[p]['geometry'].centroid.coords[0]
+    #     ls = []
+    #     for r in list(d_gdf.index):
+    #         ls.append(LineString([gdf.iloc[p]['geometry'].centroid.coords[0],
+    #                               d_gdf.iloc[r]['geometry'].centroid.coords[0]]).length)
+    #         print(f"> Appended destination {r}/{len(d_gdf)-1} for {p}/{len(gdf)-1} proxy parcels")
+    #     gdf.at[p, 'demand'] = (sum(ls)/len(ls))/1000
+    gdf['demand'] = 5
+
+    # Estimate emissions for riders and drivers
+    print("> Calculating potential emissions")
+    bus_em = 70
+    drive_em = 120
+    gdf['bus_em'] = bus_em * gdf['demand'] * gdf['riders']
+    gdf['drive_em'] = drive_em * gdf['demand'] * gdf['drivers']
+    gdf['total_em_kg_trip'] = (gdf['bus_em'] + gdf['drive_em'])/1000
+    gdf['total_em_kg_yr'] = gdf['total_em_kg_trip'] * 2 * 200
+    gdf['total_em_kg_yr_person'] = gdf['total_em_kg_yr']/gdf['population, 2016']
+
+    return gdf
