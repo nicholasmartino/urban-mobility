@@ -18,6 +18,7 @@ modes = ['walk', 'bike', 'drive', 'bus']
 em_modes = ['car', 'bus', 'total']
 exp_df = pd.DataFrame()
 macc = pd.DataFrame()
+tf_years = 20
 
 for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items():
 
@@ -47,9 +48,6 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         joined_population = gpd.sjoin(
             blocks_gdf, gdf.loc[:, [f'population_{exp}', 'geometry']])\
             .groupby('block_id', as_index=False).sum()
-        # joined_mode_shares = gpd.sjoin(
-        #     blocks_gdf, gdf.loc[:, [f"walk_{exp}_rf_n", f"bike_{exp}_rf_n", f"drive_{exp}_rf_n", f"bus_{exp}_rf_n", 'geometry']])\
-        #     .groupby('block_id', as_index=False).median()
 
         # Merge to initial blocks layer
         blocks_gdf = blocks_gdf.merge(
@@ -128,7 +126,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
 
         for mode in modes:
             if mode == 'drive':
-                # Cost based on individual estimates
+                # Cost based on individual estimates (Old version)
                 blocks_gdf[f"cost_drive_{exp}"] = \
                     blocks_gdf[f"pop_drive_{exp}"] * annual_insurance * \
                     ((blocks_gdf[f'{exp}_td']/km_per_liter) * price_per_liter) * \
@@ -186,13 +184,13 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         else:
             yr = 2040
             exp_df.at[i, "cycling_cost"] = (links[(links[f'cycle_2040'] == 1) & (links[f'cycle_2020'] == 0)].length.sum()/1000) * bike_infra_cost_km
-        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * balance_per_trip * 365
+        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * balance_per_trip * 365 * tf_years
 
     if infra == 'bus': infra_cost = exp_df["transit_cost"]
     elif infra == 'bike': infra_cost = exp_df["cycling_cost"]
     else: infra_cost = 0
 
-    exp_df[f"{infra}_infra_cost"] = -infra_cost
+    exp_df[f"{infra}_infra_cost"] = infra_cost
     exp_df[f"{infra}_infra_cost_per_cap"] = exp_df[f"{infra}_infra_cost"] / exp_df["pop"]
 
     # Plot results
@@ -245,7 +243,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         if exp != 'e0':
             j = len(macc)
             macc.at[j, 'Abatement Measure'] = f'Densification {exp.title()} + {values}'
-            macc.at[j, 'GHGs Abated (tCO2/per capita)'] = exp_df.loc[i, f"{infra}_em_saved_per_inh"]/1000
+            macc.at[j, 'GHGs Abated (tCO2/per capita)'] = (exp_df.loc[i, f"{infra}_em_saved_per_inh"]/1000) * tf_years
             macc.at[j, 'GHGs Abated (tCO2)'] = (macc.at[j, 'GHGs Abated (tCO2/per capita)']) * exp_df.at[i, "pop"]
             macc.at[j, 'Net Cost of Abatement Measure ($)'] = exp_df.loc[i, f"{infra}_infra_cost"]
 
