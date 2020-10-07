@@ -17,11 +17,28 @@ network_layers = {
     'network_drive': ["length", "link_betweenness", "link_n_betweenness"],
     'network_cycle': ["cycle_length"],
     'land_assessment_fabric': ["n_use", "year_built", "total_finished_area", "gross_building_area",
-        "number_of_bedrooms", "number_of_bathrooms"],
+        "number_of_bedrooms"],
     'land_assessment_parcels': ["area_sqkm", "n_size"],
     'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016",
-        "n_dwellings", "dwelling_div_rooms_si", "dwelling_div_bedrooms_si", "dwelling_div_rooms_sh",
-        "dwelling_div_bedrooms_sh"]
+        "n_dwellings"]
+}
+
+network_bus = {
+    'network_stops': ["frequency"],
+    'land_assessment_fabric': ["n_use", "year_built", "total_finished_area", "gross_building_area",
+        "number_of_bedrooms"],
+    'land_assessment_parcels': ["area_sqkm", "n_size"],
+    'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016",
+        "n_dwellings"]
+}
+
+network_bike = {
+    'network_cycle': ["cycle_length"],
+    'land_assessment_fabric': ["n_use", "year_built", "total_finished_area", "gross_building_area",
+        "number_of_bedrooms"],
+    'land_assessment_parcels': ["area_sqkm", "n_size"],
+    'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016",
+        "n_dwellings"]
 }
 
 radius = [1200, 1000, 800, 600, 400] #4800, 3200, 1600]

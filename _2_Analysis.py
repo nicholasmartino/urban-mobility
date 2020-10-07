@@ -4,7 +4,31 @@ import geopandas as gpd
 from Analyst import GeoBoundary
 from Geospatial.Scraper import BritishColumbia, Canada
 from Sandbox import proxy_indicators, proxy_network
-from _0_Variables import regions, radius, network_layers, sandboxes
+from _0_Variables import regions, radius, network_layers, network_bike, network_bus
+
+
+# Perform same analysis with sandbox (proxy)
+hq_experiments = {
+    'e0':2020,
+    'e1':2040,
+    'e2':2040,
+    'e3':2040
+}
+ss_experiments = {
+    'e0':2020,
+    'e1':2030,
+    'e2':2030,
+    'e3':2030,
+    'e4':2040,
+    'e5':2040,
+    'e6':2040,
+    'e7':2050,
+    'e8':2050
+}
+experiments={
+    #'Sunset': ['Metro Vancouver, British Columbia', ss_experiments],
+    'Hillside Quadra': ['Capital Regional District, British Columbia', hq_experiments]
+}
 
 # Perform network analysis for the real place
 for key, value in regions.items():
@@ -28,40 +52,19 @@ for key, value in regions.items():
         gc.collect()
 
 # Read sandbox
-proxy = GeoBoundary('Sunset Sandbox', crs=26910, directory='/Volumes/Samsung_T5/Databases/Sandbox/Sunset')
+for sandbox, value in experiments.items():
 
-# Transfer network indicators to sandbox
-proxy = proxy_network(proxy)
-proxy.nodes = gpd.read_file(proxy.gpkg, layer='network_intersections')
-proxy.links = gpd.read_file(proxy.gpkg, layer='network_links')
+    # Define geographic boundary
+    proxy = GeoBoundary(f'{sandbox} Sandbox', crs=26910, directory=f'/Volumes/Samsung_T5/Databases/Sandbox/{sandbox}')
 
-# Extract elevation data
-proxy.node_elevation()
+    # Transfer network indicators to sandbox
+    proxy = proxy_network(proxy)
+    proxy.nodes = gpd.read_file(proxy.gpkg, layer='network_intersections')
+    proxy.links = gpd.read_file(proxy.gpkg, layer='network_links')
 
-# Perform same analysis with sandbox (proxy)
-hq_experiments = {
-    'e0':2020,
-    'e1':2040,
-    'e2':2040,
-    'e3':2040
-}
-ss_experiments = {
-    'e0':2020,
-    'e1':2030,
-    'e2':2030,
-    'e3':2030,
-    'e4':2040,
-    'e5':2040,
-    'e6':2040,
-    'e7':2050,
-    'e8':2050
-}
-experiments={
-    'Sunset': ['Metro Vancouver, British Columbia', ss_experiments],
-    'Hillside Quadra': ['Capital Regional District, British Columbia', hq_experiments]
-}
+    # Extract elevation data
+    proxy.node_elevation()
 
-for sandbox in sandboxes:
     for code, year in experiments[sandbox][1].items():
         district = GeoBoundary(experiments[sandbox][0], crs=26910)
 
@@ -71,10 +74,30 @@ for sandbox in sandboxes:
 
         # Perform network analysis
         network_analysis = proxy.network_analysis(
-            run=True,
+            run=False,
             col_prefix='mob',
             file_prefix=f'mob_{code}',
             service_areas=radius,
             sample_layer=f"land_parcels_{code}",
             aggregated_layers=network_layers,
+            keep=['OBJECTID', "population, 2016"])
+
+        # Perform network analysis
+        network_analysis_bus = proxy.network_analysis(
+            run=False,
+            col_prefix='mob_bus',
+            file_prefix=f'mob_bus_{code}',
+            service_areas=radius,
+            sample_layer=f"land_parcels_{code}",
+            aggregated_layers=network_bus,
+            keep=['OBJECTID', "population, 2016"])
+
+        # Perform network analysis
+        network_analysis_bike = proxy.network_analysis(
+            run=True,
+            col_prefix='mob_bike',
+            file_prefix=f'mob_bike_{code}',
+            service_areas=radius,
+            sample_layer=f"land_parcels_{code}",
+            aggregated_layers=network_bike,
             keep=['OBJECTID', "population, 2016"])

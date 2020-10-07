@@ -52,7 +52,8 @@ from shapely.affinity import translate, scale
 from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
-from sklearn.mixture import GaussianMixture
+from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
+from sklearn.cluster import KMeans
 from skspatial import interp2d
 
 def download_file(url, filename=None):
@@ -353,7 +354,7 @@ class GeoBoundary:
                 print(population * destinations)
         return self
 
-    def centrality(self, run=True, osm=False, dual=False, axial=False, weighted=True, layer='network_links'):
+    def centrality(self, run=True, osm=False, dual=False, axial=False, weighted=True, layer='network_walk'):
         if run:
             rf = 3
 
@@ -543,7 +544,7 @@ class GeoBoundary:
                 links = calculate_azimuth(links)
                 links = links.reset_index()
 
-                n_clusters = 8
+                n_clusters = 6
                 print(f"> Clustering segments into {n_clusters} clusters based on azimuth")
                 bgm = GaussianMixture(
                     n_components=n_clusters,
@@ -559,7 +560,7 @@ class GeoBoundary:
                 clusters = [links.loc[links.axial_labels == i] for i in links['axial_labels'].unique()]
 
                 print(f"> Buffering and iterating over multi geometries (!!!)")
-                buffer_r = 5
+                buffer_r = 7
                 mpols = [df.buffer(buffer_r).unary_union for df in clusters]
                 geoms = []
                 for mpol in mpols:
@@ -878,7 +879,7 @@ class GeoBoundary:
 
             print(f"> Total number of samples reduced from {orig_n} to {len(sample_gdf)}")
             elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-            sample_gdf.to_file(f'{self.directory}Databases/Network/{self.municipality}_{file_prefix}_na.geojson', driver='GeoJSON')
+            sample_gdf.to_file(f'{self.directory}/{self.municipality}_{file_prefix}_na.geojson', driver='GeoJSON')
             # try: sample_gdf.to_file(self.gpkg, layer=f'network_analysis_{prefix}', driver='GPKG', encoding="ISO-8859-1")
             # except: print("!!! Results not saved to GeoPackage !!!")
             print(f'Network analysis processed in {elapsed} minutes @ {datetime.datetime.now()}, regressing data')
@@ -894,7 +895,7 @@ class GeoBoundary:
             r_geometry = [boundary.at[0, 'geometry'].centroid for feature in r_ftr_list]
             r_features = gpd.GeoDataFrame({'features':r_ftr_list, 'geometry':r_geometry})
             r_features.to_file(self.gpkg, layer=f'{file_prefix}_aggregated_features')
-            r_features.to_csv(f'{self.directory}Databases/Network/{self.municipality}_na_reg_{file_prefix}.csv')
+            r_features.to_csv(f'{self.directory}/{self.municipality}_na_reg_{file_prefix}.csv')
 
             return sample_gdf, r_features
 
@@ -1122,6 +1123,7 @@ class GeoBoundary:
             # Calculate FAR
             # Calculate population density
         return None
+
 
     # Spatial analysis
     def spatial_join(self, sample_layer, aggregated_layers, prefix='', run=True):

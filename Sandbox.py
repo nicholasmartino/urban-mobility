@@ -4,6 +4,7 @@ import pandas as pd
 from shapely.geometry import Point
 from skbio import diversity
 
+
 def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
 
     exp = list(experiment.keys())[0]
@@ -90,13 +91,13 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
 
     print("> Calculating diversity indices")
 
-    # Diversity of bedrooms
-    df_ddb = pd.DataFrame()
-    for u in range(1,5):
-        if u < 4: df_ddb[f"{u}_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] == u])]
-        elif u >= 4: df_ddb[f"4_plus_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] >= 4])]
-    dss_are["dwelling_div_bedrooms_si"] = [diversity.alpha_diversity("simpson", df_ddb)[0] for i in range(len(dss_are))]
-    dss_are["dwelling_div_bedrooms_sh"] = [diversity.alpha_diversity("shannon", df_ddb)[0] for i in range(len(dss_are))]
+    # # Diversity of bedrooms
+    # df_ddb = pd.DataFrame()
+    # for u in range(1,5):
+    #     if u < 4: df_ddb[f"{u}_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] == u])]
+    #     elif u >= 4: df_ddb[f"4_plus_bedrms"] = [len(buildings.loc[buildings[n_bedrms_col] >= 4])]
+    # dss_are["dwelling_div_bedrooms_si"] = [diversity.alpha_diversity("simpson", df_ddb)[0] for i in range(len(dss_are))]
+    # dss_are["dwelling_div_bedrooms_sh"] = [diversity.alpha_diversity("shannon", df_ddb)[0] for i in range(len(dss_are))]
 
     # # Diversity of rooms
     # df_ddr = pd.DataFrame()
@@ -124,11 +125,15 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     rapid2040 = streets[streets['rapid_2040'] == 1].geometry.buffer(5).unary_union
     for i in list(stops.index):
         if stops.iloc[i]['geometry'].within(bus2020):
-            stops.at[i, 'frequency'] = 32  # Trips per day from 30 to 30 minutes
+            stops.at[i, 'frequency'] = 32  # 1.3 trips per hour
+            stops.at[i, 'frequency_2020'] = 32  # 1.3 trips per hour
+            stops.at[i, 'frequency_2040'] = 32  # 1.3 trips per hour
         if stops.iloc[i]['geometry'].within(rapid2040):
-            stops.at[i, 'frequency'] = 48 # Trips per day from 7 to 7 minutes
+            stops.at[i, 'frequency'] = 48 # 2 trips per hour
+            stops.at[i, 'frequency_2040'] = 48 # 2 trips per hour
         if stops.iloc[i]['geometry'].within(freqt2040) & yr == 2040:
-            stops.at[i, 'frequency'] = 192 # Trips per day from 15 to 15 minutes
+            stops.at[i, 'frequency'] = 192 # 8 trips per hour
+            stops.at[i, 'frequency_2040'] = 192 # 8 trips per hour
     stops = stops.fillna(0)
     stops = stops[stops['frequency'] > 0]
 
@@ -245,3 +250,9 @@ def estimate_emissions(gdf, title='', directory='/Volumes/Samsung_T5/Databases')
     gdf['total_em_kg_yr_person'] = gdf['total_em_kg_yr']/gdf['population, 2016']
 
     return gdf
+
+def infra_cost_cycling():
+    return
+
+def infra_cost_():
+    return
