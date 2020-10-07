@@ -147,19 +147,21 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         exp_df["cost_per_cap"] = exp_df["total_cost"]/exp_df["pop"]
 
     # Infrastructure costs
-    bike_infra_cost_km = 100000 #https://www.victoria.ca/EN/main/residents/transportation/cycling/new-cycling-projects/funding.html
 
-    #https://www.bctransit.com/documents/1529706193497
+    # https://www.victoria.ca/EN/main/residents/transportation/cycling/new-cycling-projects/funding.html
+    bike_infra_cost_km = 100000
+
+    # https://www.bctransit.com/documents/1529706193497
     vendor_pay = 69262676 + 11577349
     employee_net_pay = 43554814
     operations = 242546000
     maintenance = 55699000
     administration = 30419000
-    total_fleet = 1+38+29+128+309+3+87+75+67+12+33+10+6+338+4 #https://bctransit.com/about/fleet
+    total_fleet = 1+38+29+128+309+3+87+75+67+12+33+10+6+338+4 # https://bctransit.com/about/fleet
     amortization = 61047000
     debt = 9106000
 
-    #https://bctransit.com/about/facts/victoria
+    # https://bctransit.com/about/facts/victoria
     rev_fares = 37500000
     rev_pass = 4700000
     province = 4760000
@@ -167,11 +169,17 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
     fuel_tax = 20400000
     adv = 700000
     total_trips = 27000000
+    hours = 836000
 
+    # Not sourced
+    km_per_hour = 40
+    km_routes_in_boundary = 1.6 # km
+
+    km_travelled = hours * km_per_hour
     total_cost = operations + maintenance + administration
     total_revenue = rev_fares + rev_pass + province + prop_tax + fuel_tax + adv
     balance = total_revenue - total_cost
-    balance_per_trip = (balance/total_trips) * -1
+    balance_per_trip_per_km = (balance/total_trips/km_travelled) * -1
 
     local_gbd = GeoBoundary('Hillside Quadra Sandbox', crs=26910, directory='/Volumes/Samsung_T5/Databases/Sandbox/Hillside Quadra')
 
@@ -184,7 +192,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         else:
             yr = 2040
             exp_df.at[i, "cycling_cost"] = (links[(links[f'cycle_2040'] == 1) & (links[f'cycle_2020'] == 0)].length.sum()/1000) * bike_infra_cost_km
-        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * balance_per_trip * 365 * tf_years
+        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * balance_per_trip_per_km * km_routes_in_boundary * 365 * tf_years
 
     if infra == 'bus': infra_cost = exp_df["transit_cost"]
     elif infra == 'bike': infra_cost = exp_df["cycling_cost"]
