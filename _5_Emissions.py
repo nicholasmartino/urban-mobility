@@ -12,6 +12,7 @@ pd.set_option('display.width', 700)
 fm.fontManager.ttflist += fm.createFontList(['/Volumes/Samsung_T5/Fonts/roboto/Roboto-Light.ttf'])
 rc('font', family='Roboto', weight='light')
 name = 'Hillside Quadra'
+region = 'Capital Regional District, British Columbia'
 directory = f'/Volumes/Samsung_T5/Databases/Sandbox/{name}'
 experiments = ['e0', 'e1', 'e2', 'e3']
 modes = ['walk', 'bike', 'drive', 'bus']
@@ -146,7 +147,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         exp_df.at[i, "pop"] = blocks_gdf[f'population_{exp}'].sum()
         exp_df["cost_per_cap"] = exp_df["total_cost"]/exp_df["pop"]
 
-    # Infrastructure costs
+    ### Infrastructure costs ###
 
     # https://www.victoria.ca/EN/main/residents/transportation/cycling/new-cycling-projects/funding.html
     bike_infra_cost_km = 100000
@@ -169,19 +170,30 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
     fuel_tax = 20400000
     adv = 700000
     total_trips = 27000000
-    hours = 836000
 
     # Not sourced
-    km_per_hour = 40
-    km_routes_in_boundary = 1.6 # km
-
-    km_travelled = hours * km_per_hour
-    total_cost = operations + maintenance + administration
-    total_revenue = rev_fares + rev_pass + province + prop_tax + fuel_tax + adv
-    balance = total_revenue - total_cost
-    balance_per_trip_per_km = (balance/total_trips/km_travelled) * -1
+    route_in_boundary = 1.6 # km
 
     local_gbd = GeoBoundary('Hillside Quadra Sandbox', crs=26910, directory='/Volumes/Samsung_T5/Databases/Sandbox/Hillside Quadra')
+
+    # Get average length of routes that crosses the neighbourhood
+    region = GeoBoundary('Capital Regional District, British Columbia')
+    routes = gpd.read_file(region.gpkg, layer='network_routes')
+
+    # Get routes that intersect with sandbox
+    boundary = gpd.read_file(local_gbd.gpkg, layer='land_municipal_boundary')
+    routes_overlay = gpd.overlay(routes, boundary)
+    routes_overlay['length'] = [geom.length for geom in routes_overlay['geometry']]
+
+    # Calculate the ratio of routes that intersects with the sandbox boundary
+    overlay_ratio = routes_overlay['length']/routes[routes['route'].isin(routes_overlay['route'])].reset_index(drop=True)['length']
+    ave_ratio_route_in_boundary = overlay_ratio.mean()
+
+    # Calculate cost per trip
+    total_cost = operations + maintenance + administration
+    total_revenue = rev_fares + rev_pass + province + prop_tax + fuel_tax + adv
+    cost = total_cost - total_revenue
+    cost_per_trip = (cost/total_trips) * ave_ratio_route_in_boundary
 
     links = gpd.read_file(local_gbd.gpkg, layer='network_links')
     stops = gpd.read_file(local_gbd.gpkg, layer='network_stops')
@@ -192,7 +204,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
         else:
             yr = 2040
             exp_df.at[i, "cycling_cost"] = (links[(links[f'cycle_2040'] == 1) & (links[f'cycle_2020'] == 0)].length.sum()/1000) * bike_infra_cost_km
-        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * balance_per_trip_per_km * km_routes_in_boundary * 365 * tf_years
+        exp_df.at[i, "transit_cost"] = stops[f'frequency_{yr}'].sum() * cost_per_trip * 365 * tf_years
 
     if infra == 'bus': infra_cost = exp_df["transit_cost"]
     elif infra == 'bike': infra_cost = exp_df["cycling_cost"]

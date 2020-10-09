@@ -22,8 +22,8 @@ for key, value in regions.items():
         geodatabase_dir=f'{bca_dir}Juchan_backup/BCA_2017_roll_number_method/BCA_2017_roll_number_method.gdb')
 
     # BC Transit
-    bc.get_bc_transit(run=False, down=False, urls=[
+    bc.get_bc_transit(run=True, down=False, urls=[
         #'http://victoria.mapstrat.com/current/google_transit.zip',
-        'local',
+        'local', 'local'
         #'https://www.bctransit.com/data/gtfs/prince-george.zip'
     ])
