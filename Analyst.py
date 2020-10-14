@@ -167,7 +167,7 @@ class GeoBoundary:
         print(f"\nCreating GeoSpatial class {municipality}")
         self.municipality = str(municipality)
 
-        if directory[:1] == '/': self.directory = directory
+        if directory[-1:] == '/': self.directory = directory
         else: self.directory = f"{directory}/"
 
         self.db_dir = f"{directory}/{self.municipality}"
@@ -207,8 +207,8 @@ class GeoBoundary:
 
             def save_and_open(ox_g, name=''):
                 ox.save_graph_shapefile(ox_g, 'osm', self.directory)
-                edges = gpd.read_file(self.directory+'osm/edges/edges.shp')
-                nodes = gpd.read_file(self.directory+'osm/nodes/nodes.shp')
+                edges = gpd.read_file(f'{self.directory}osm/edges/edges.shp')
+                nodes = gpd.read_file(f'{self.directory}osm/nodes/nodes.shp')
 
                 edges.crs = 4326
                 edges.to_crs(epsg=self.crs, inplace=True)
