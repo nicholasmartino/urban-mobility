@@ -23,11 +23,13 @@ SOFTWARE.
 """
 
 import ast
+import os
 import gc
 import glob
 import timeit
 from shutil import copyfile
 
+from tqdm import tqdm
 import geopandas as gpd
 import osmnx as ox
 import pandana as pdna
@@ -41,7 +43,8 @@ import statsmodels.api as sm
 from PIL import Image
 from Statistics.basic_stats import shannon_div
 from fiona import listlayers
-from graph_tool.all import *
+try: from graph_tool.all import *
+except: pass
 from matplotlib.colors import ListedColormap
 from pylab import *
 from rasterio import features
@@ -53,8 +56,8 @@ from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
-from sklearn.cluster import KMeans
-from skspatial import interp2d
+from sklearn.cluster import DBSCAN, KMeans, AffinityPropagation
+
 
 def download_file(url, filename=None):
     if filename is None: local_filename = url.split('/')[-1]
@@ -161,14 +164,14 @@ def filter_features(df, y_features, x_features=None, pval_threshold=0.05, corr_t
         return ftrs
 
 
-class GeoBoundary:
-    def __init__(self, municipality='City, State', crs=26910,
+class Network:
+    def __init__(self, municipality='City, State', crs=26910, nodes='network_nodes', links='network_links',
                  directory='/Volumes/Samsung_T5/Databases'):
         print(f"\nCreating GeoSpatial class {municipality}")
         self.municipality = str(municipality)
 
-        if directory[-1:] == '/': self.directory = directory
-        else: self.directory = f"{directory}/"
+        if directory[-1:] == '/': self.directory = directory[:-1]
+        else: self.directory = directory
 
         self.db_dir = f"{directory}/{self.municipality}"
         self.gpkg = f"{self.directory}/{self.municipality}.gpkg"
@@ -181,11 +184,8 @@ class GeoBoundary:
             print("> land_municipal_boundary layer found")
         except: print("> land_municipal_boundary layer not found")
 
-        try:
-            self.nodes = gpd.read_file(self.gpkg, layer='network_nodes')
-            self.links = gpd.read_file(self.gpkg, layer='network_links')
-            print("> network_nodes & _links layers found")
-        except: print("> network_nodes &| _links layer(s) not found")
+        self.nodes = nodes
+        self.links = links
 
         print(f"Class {self.city_name} created @ {datetime.datetime.now()}, crs {self.crs}")
 
@@ -194,7 +194,7 @@ class GeoBoundary:
         # Download administrative boundary from OpenStreetMaps
         if bound:
             print(f"> Downloading {self.city_name}'s administrative boundary from OpenStreetMaps")
-            self.boundary = ox.gdf_from_place(self.municipality)
+            self.boundary = ox.geocode_to_gdf(self.municipality)
             self.boundary.to_file(self.gpkg, layer='land_municipal_boundary', driver='GPKG')
             self.boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
             self.boundary.to_crs(epsg=self.crs, inplace=True)
@@ -206,9 +206,12 @@ class GeoBoundary:
             print(f"> Downloading {self.city_name}'s street network from OpenStreetMaps")
 
             def save_and_open(ox_g, name=''):
-                ox.save_graph_shapefile(ox_g, 'osm', self.directory)
-                edges = gpd.read_file(f'{self.directory}osm/edges/edges.shp')
-                nodes = gpd.read_file(f'{self.directory}osm/nodes/nodes.shp')
+                osm_dir = f'{self.directory}/OpenStreetMap/{self.municipality}'
+                if not os.path.exists(osm_dir):
+                    os.mkdir(osm_dir)
+                ox.save_graph_shapefile(G=ox_g, filepath=osm_dir)
+                edges = gpd.read_file(f'{osm_dir}/edges.shp')
+                nodes = gpd.read_file(f'{osm_dir}/nodes.shp')
 
                 edges.crs = 4326
                 edges.to_crs(epsg=self.crs, inplace=True)
@@ -219,67 +222,73 @@ class GeoBoundary:
 
                 return nodes, edges
 
-            network = ox.graph_from_place(self.municipality)
-            st_nodes, st_edges = save_and_open(network, 'network')
-            cycleway = ox.graph_from_place(self.municipality, infrastructure='way["cycleway"]')
+            network = ox.graph_from_place(self.municipality, network_type='all')
+            nodes, edges = save_and_open(network, 'network')
+
+            walk = ox.graph_from_place(self.municipality, network_type='walk')
+            w_nodes, w_edges = save_and_open(walk, 'network_walk')
+            cycleway = ox.graph_from_place(self.municipality, network_type='bike')
             c_nodes, c_edges = save_and_open(cycleway, 'network_cycle')
+            drive = ox.graph_from_place(self.municipality, network_type='drive')
+            d_nodes, d_edges = save_and_open(drive, 'network_drive')
 
-            # Simplify links
-            s_tol = 15
-            s_links = st_edges
-            s_links.geometry = st_edges.simplify(s_tol)
+            # # Simplify links
+            # s_tol = 15
+            # s_links = w_edges
+            # s_links.geometry = w_edges.simplify(s_tol)
 
-            print("Filtering networks from OpenStreetMap")
+            # print("Filtering networks from OpenStreetMap")
+            #
+            # # Filter Open Street Map Networks into Walking, Cycling and Driving
+            # def filter_highway(l):
+            #     mask = []
+            #     for j in st_edges.highway:
+            #         mh = []
+            #         for i in l:
+            #             if (i in j) | (i == j): mh.append(True)
+            #         if len(mh) > 0:
+            #             mask.append(True)
+            #         else:
+            #             mask.append(False)
+            #     return st_edges.loc[mask]
+            #
+            # walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
+            #            'primary', 'road', 'secondary', 'service', 'steps', 'tertiary', 'track', 'trunk', 'unclassified']
+            # cycling = ['cycleway']
+            # driving = ['corridor', 'living_street', 'motorway', 'primary', 'primary_link', 'residential', 'road',
+            #            'secondary', 'secondary_link', 'service', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link',
+            #            'unclassified']
+            #
+            # walking_net = filter_highway(walking)
+            # cycling_net = pd.concat([filter_highway(cycling), c_edges]).reset_index().drop('index', axis=1)
+            # cycling_net = cycling_net.drop_duplicates(subset=['geometry'])
+            # cycling_net.loc[:, 'cycle_length'] = cycling_net.geometry.length
+            # driving_net = filter_highway(driving)
 
-            # Filter Open Street Map Networks into Walking, Cycling and Driving
-            def filter_highway(l):
-                mask = []
-                for j in st_edges.highway:
-                    mh = []
-                    for i in l:
-                        if (i in j) | (i == j): mh.append(True)
-                    if len(mh) > 0:
-                        mask.append(True)
-                    else:
-                        mask.append(False)
-                return st_edges.loc[mask]
+            w_edges.to_file(self.gpkg, layer='network_walk')
+            c_edges.to_file(self.gpkg, layer='network_cycle')
+            d_edges.to_file(self.gpkg, layer='network_drive')
+            nodes.to_file(self.gpkg, layer='network_nodes')
 
-            walking = ['bridleway', 'corridor', 'footway', 'living_street', 'path', 'pedestrian', 'residential',
-                       'primary', 'road', 'secondary', 'service', 'steps', 'tertiary', 'track', 'trunk', 'unclassified']
-            cycling = ['cycleway']
-            driving = ['corridor', 'living_street', 'motorway', 'primary', 'primary_link', 'residential', 'road',
-                       'secondary', 'secondary_link', 'service', 'tertiary', 'tertiary_link', 'trunk', 'trunk_link',
-                       'unclassified']
-
-            walking_net = filter_highway(walking)
-            cycling_net = pd.concat([filter_highway(cycling), c_edges]).reset_index().drop('index', axis=1)
-            cycling_net = cycling_net.drop_duplicates(subset=['geometry'])
-            cycling_net.loc[:, 'cycle_length'] = cycling_net.geometry.length
-            driving_net = filter_highway(driving)
-
-            walking_net.to_file(self.gpkg, layer='network_walk')
-            cycling_net.to_file(self.gpkg, layer='network_cycle')
-            driving_net.to_file(self.gpkg, layer='network_drive')
-
-            sbb = False
-            if sbb:
-                # Buffer endpoints and get centroid
-                end_pts = gpd.GeoDataFrame(geometry=[Point(l.xy[0][0], l.xy[1][0]) for l in s_links.geometry] +
-                                                    [Point(l.xy[0][1], l.xy[1][1]) for l in s_links.geometry])
-                uu = gpd.GeoDataFrame(geometry=[pol.centroid for pol in end_pts.buffer(s_tol/2).unary_union]).unary_union
-
-                # Snap edges to vertices
-                lns = []
-                for ln in s_links.geometry:
-                    p0 = Point(ln.coords[0])
-                    p1 = Point(ln.coords[1])
-                    np0 = nearest_points(p0, uu)[1]
-                    np1 = nearest_points(p1, uu)[1]
-                    lns.append(LineString([np0, np1]))
-
-                s_links['geometry'] = lns
-
-            s_links.to_file(self.gpkg, layer='network_links_simplified')
+            # sbb = False
+            # if sbb:
+            #     # Buffer endpoints and get centroid
+            #     end_pts = gpd.GeoDataFrame(geometry=[Point(l.xy[0][0], l.xy[1][0]) for l in s_links.geometry] +
+            #                                         [Point(l.xy[0][1], l.xy[1][1]) for l in s_links.geometry])
+            #     uu = gpd.GeoDataFrame(geometry=[pol.centroid for pol in end_pts.buffer(s_tol/2).unary_union]).unary_union
+            #
+            #     # Snap edges to vertices
+            #     lns = []
+            #     for ln in w_edges.geometry:
+            #         p0 = Point(ln.coords[0])
+            #         p1 = Point(ln.coords[1])
+            #         np0 = nearest_points(p0, uu)[1]
+            #         np1 = nearest_points(p1, uu)[1]
+            #         lns.append(LineString([np0, np1]))
+            #
+            #     w_edges['geometry'] = lns
+            #
+            # w_edges.to_file(self.gpkg, layer='network_links_simplified')
             print("Street network from OpenStreetMap updated")
 
     def merge_csv(self, path):
@@ -363,6 +372,20 @@ class GeoBoundary:
             print(f"Processing centrality measures for {self.municipality} with {len(links)} links from OSM")
 
             # Calculate azimuth of links
+            def relative_max_min(df):
+                # Get indices of maximum and minimum
+                df['X_of_maxY'] = [ln.xy[0][ln.xy[1].index(max(ln.xy[1]))] for ln in df.geometry]
+                df['X_of_minY'] = [ln.xy[0][ln.xy[1].index(min(ln.xy[1]))] for ln in df.geometry]
+
+                df['Y_of_maxX'] = [ln.xy[1][ln.xy[0].index(max(ln.xy[0]))] for ln in df.geometry]
+                df['Y_of_minX'] = [ln.xy[1][ln.xy[0].index(min(ln.xy[0]))] for ln in df.geometry]
+
+                df['X_x'] = (df['maxX'] - df['minX'])/df.length
+                df['Y_y'] = (df['maxY'] - df['minY'])/df.length
+
+                return df
+
+
             def calculate_azimuth(df):
                 df['azimuth'] = [math.degrees(math.atan2(
                     (ln.xy[0][1] - ln.xy[0][0]),
@@ -373,8 +396,49 @@ class GeoBoundary:
                     (max(ln.xy[1][1], ln.xy[1][0]) - min(ln.xy[1][1], ln.xy[1][0]))
                 )) for ln in df.geometry]
 
-                df.loc[df['azimuth'] < -90, "azimuth"] = 180 + df['azimuth']
-                df.loc[df['azimuth'] > 90, "azimuth"] = df['azimuth'] - 180
+                df['geometry_x'] = [LineString([
+                    Point(min(ln.xy[0]), ln.xy[1][ln.xy[0].index(min(ln.xy[0]))]),
+                    Point(max(ln.xy[0]), ln.xy[1][ln.xy[0].index(max(ln.xy[0]))])
+                ]) for ln in df.geometry]
+
+                df['geometry_y'] = [LineString([
+                    Point(ln.xy[0][ln.xy[1].index(min(ln.xy[1]))], min(ln.xy[1])),
+                    Point(ln.xy[0][ln.xy[1].index(max(ln.xy[1]))], max(ln.xy[1]))
+                ]) for ln in df.geometry]
+
+                df['maxX'] = [max(ln.xy[0]) for ln in df.geometry]
+                df['minX'] = [min(ln.xy[0]) for ln in df.geometry]
+                df['maxY'] = [max(ln.xy[1]) for ln in df.geometry]
+                df['minY'] = [min(ln.xy[1]) for ln in df.geometry]
+
+                df = relative_max_min(df)
+
+                df.loc[df[df['X_x'] > df['Y_y']].index, 'orientation'] = 'horizontal'
+                df.loc[df[df['X_x'] <= df['Y_y']].index, 'orientation'] = 'vertical'
+                df.loc[df[abs(df['X_x'] - df['Y_y']) < 0.2].index, 'orientation'] = 'diagonal'
+
+                df.loc[df[df['X_x'] > df['Y_y']].index, 'geometry'] = df.loc[df[df['X_x'] > df['Y_y']].index, 'geometry_x']
+                df.loc[df[df['X_x'] <= df['Y_y']].index, 'geometry'] = df.loc[df[df['X_x'] <= df['Y_y']].index, 'geometry_y']
+
+                df.loc[df[df['X_x'] > df['Y_y']].index, 'up'] = 0
+                df.loc[df[df['X_x'] <= df['Y_y']].index, 'up'] = 1
+
+                df = relative_max_min(df)
+
+                df['yX-yx'] = (df['Y_of_maxX'] - df['Y_of_minX'])/df.length
+                df['xY-xy'] = (df['X_of_maxY'] - df['X_of_minY'])/df.length
+
+                # If street is diagonal, consider direction
+                df['direction'] = 0
+                diagonal_i = df[abs(df['X_x'] - df['Y_y']) < 0.5].index
+                df.loc[diagonal_i, 'direction'] = [1 if l > 0 else -1 for l in df.loc[diagonal_i, 'yX-yx']]
+
+                df['up'] = [1 if l > 0 else 0 for l in df['yX-yx']]
+
+                df = df.drop(['maxX', 'minX', 'maxY', 'minY', 'Y_of_maxX', 'Y_of_minX', 'X_of_maxY', 'X_of_minY', 'geometry_x', 'geometry_y'], axis=1)
+
+                df.loc[df['azimuth'] < 0, "azimuth45"] = 180 + df['azimuth']
+                df.loc[(df['azimuth'] < 0) & (df['azimuth45'] >= -90), "azimuth"] = df['azimuth'] - 180
 
                 return df
 
@@ -394,8 +458,7 @@ class GeoBoundary:
                 weights = []
                 links_ids = []
                 g_edges = []
-                for i in list(links.index):
-                    print(f"> Processing link {i}/{len(links)}")
+                for i in tqdm(list(links.index)):
 
                     o_osmid = links.at[i, 'from']
                     d_osmid = links.at[i, 'to']
@@ -544,16 +607,21 @@ class GeoBoundary:
                 links = calculate_azimuth(links)
                 links = links.reset_index()
 
-                n_clusters = 6
+                n_clusters = 9
                 print(f"> Clustering segments into {n_clusters} clusters based on azimuth")
-                bgm = GaussianMixture(
-                    n_components=n_clusters,
-                    # weight_concentration_prior_type='dirichlet_process',
-                    # weight_concentration_prior=0.001
-                )
-                to_cluster = links.loc[:, ['azimuth', 'azimuth_n']]
-                bgm.fit(to_cluster)
-                links['axial_labels'] = bgm.predict(to_cluster)
+
+                # links['azimuth_n'] = abs(links['azimuth'])
+                # for i in range(n_clusters):
+                #     if i > 0:
+                #         links.loc[links['azimuth_n'] > i * (180/n_clusters), 'axial_labels'] = i
+                #     else:
+                #         links.loc[links['azimuth_n'] < (180/n_clusters), 'axial_labels'] = i
+
+                # bgm.fit(to_cluster)
+                cluster = KMeans()
+                links['axial_labels'] = cluster.fit_predict(X=links.loc[:, ['X_x', 'Y_y', 'direction']])
+                links = links.drop('index', axis=1)
+                links.crs = self.crs
                 links.to_file(self.gpkg, layer='network_axial_ln', driver='GPKG')
 
                 print("> Isolating geometries to create axial-like lines")
@@ -593,7 +661,7 @@ class GeoBoundary:
                 print("> Finding connected lines")
                 g_edges = []
                 # Loop through each Shapely polygon (axial line)
-                for i, pol in enumerate(axial_gdf.geometry):
+                for i, pol in enumerate(tqdm(axial_gdf.geometry)):
 
                     # Merge cells that have overlapping bounding boxes
                     potential_conn = [axial_gdf.id[pos] for pos in idx.intersection(pol.bounds)]
@@ -605,7 +673,6 @@ class GeoBoundary:
                             g_edges.append([i, j, 1])  # axial_gdf.loc[i, 'length']/1000])
                             conn.append(j)
                     connectivity.append(len(conn))
-                    print(f"> Finished adding edges of axial line {i+1}/{len(axial_gdf)} to dual graph")
 
                 axial_gdf['connectivity'] = connectivity
 
@@ -673,6 +740,7 @@ class GeoBoundary:
                 links.to_file(self.gpkg, layer='network_simplified')
 
             if axial:
+                axial_gdf['azimuth_n'] = links['azimuth_n']
                 axial_gdf['axial_degree'] = g.degree_property_map('total').get_array()
                 axial_gdf['axial_closeness'] = clo.get_array()
                 axial_gdf['axial_pagerank'] = prk.get_array()
@@ -715,12 +783,12 @@ class GeoBoundary:
             print(f"Centrality measures processed in {elapsed} minutes")
             return links
 
-    def network_analysis(self, sample_layer, aggregated_layers, service_areas, prefix='',
-        decays=None, col_prefix='', file_prefix='', run=True, filter_min=None, keep=None, feature_layer='network_analysis_features'):
+    def network_analysis(self, sample_gdf, aggregated_layers, service_areas, prefix='',
+                         decays=None, col_prefix='', file_prefix='', run=True, filter_min=None, keep=None):
         """
         Given a layer of spatial features, it aggregates data from its surroundings using network service areas
 
-        :param sample_layer: (str) Sample features to be analyzed, ex: 'lda' or 'parcel'.
+        :param sample_gdf: (str) Sample features to be analyzed, ex: 'lda' or 'parcel'.
         :param aggregated_layers: (dict) Layers and columns to aggregate data, ex: {'lda':["walk"], 'parcel':["area"]}
         :param service_areas: (list) Buffer to aggregate from each sample_layer feature[400, 800, 1600]
         :param decays: (list) Types of distance-decay function - flat, linear or both
@@ -737,21 +805,27 @@ class GeoBoundary:
             if keep is None: keep = ['geometry']
 
             # Read and reproject sample GeoDataFrame
-            sample_gdf = gpd.read_file(self.gpkg, layer=sample_layer)
-            sample_gdf = sample_gdf.to_crs(epsg=self.crs)
+            if sample_gdf.crs is None: sample_gdf.crs = self.crs
+            else: sample_gdf = sample_gdf.to_crs(epsg=self.crs)
             sample_gdf.columns = [col_name.lower() for col_name in sample_gdf.columns]
+
+            # Check if all columns are in GeoDataFrame
+            for col in aggregated_layers.keys():
+                try: col in sample_gdf.columns
+                except: raise print(f"{col} not found on sample layer")
 
             orig_n = len(sample_gdf.geometry)
             print(f'\n> Network analysis for {orig_n} geometries at {service_areas} buffer radius in {self.city_name}')
 
             # Load data
-            nodes = self.nodes
-            edges = self.links
+            nodes = gpd.read_file(self.gpkg, layer=self.nodes)
+            edges = gpd.read_file(self.gpkg, layer=self.links)
             print(nodes.head(3))
             print(edges.head(3))
-            nodes.index = list(nodes['osmid'].astype(int))
-            edges["from"] = pd.to_numeric(edges["from"])
-            edges["to"] = pd.to_numeric(edges["to"])
+            nodes['osmid'] = nodes['osmid'].astype(int)
+            nodes = nodes.set_index('osmid', drop=False)
+            edges["from"] = edges["from"].astype(int64)
+            edges["to"] = edges["to"].astype(int64)
 
             # Read and reproject network GeoDataFrames
             nodes = nodes.to_crs(epsg=self.crs)
@@ -769,10 +843,10 @@ class GeoBoundary:
 
             for radius in service_areas:
 
-                edges['from'] = edges['from'].astype(int)
-                edges['to'] = edges['to'].astype(int)
+                edges['from'] = edges['from'].astype(int64)
+                edges['to'] = edges['to'].astype(int64)
                 edges['length'] = edges['length'].astype(float)
-                edges['length'] = edges['length'].astype(int)
+                edges['length'] = edges['length'].astype(int64)
 
                 print(f"> Creating network with {len(nodes)} intersections and {len(edges)} links")
                 # Create pandana network
@@ -780,18 +854,14 @@ class GeoBoundary:
                                    nodes.geometry.y,
                                    edges["from"],
                                    edges["to"],
-                                   edges[["length"]].astype(int),
+                                   edges[["length"]],
                                    twoway=True)
                 print(net)
                 net.precompute(radius)
 
                 x, y = sample_gdf.centroid.x, sample_gdf.centroid.y
                 sample_gdf["node_ids"] = net.get_node_ids(x.values, y.values)
-                # cols = keep + ["node_ids"]
-                # [print(f"!!! {col} not found in {sample_layer} !!!") for col in cols if col not in sample_gdf.columns]
-                # sample_gdf = sample_gdf.loc[:, cols]
 
-                buffers = {}
                 for key, values in aggregated_layers.items():
                     values = [f"{key}_ct"]+values
                     gdf = gpd.read_file(self.gpkg, layer=key)
@@ -879,25 +949,23 @@ class GeoBoundary:
 
             print(f"> Total number of samples reduced from {orig_n} to {len(sample_gdf)}")
             elapsed = round((timeit.default_timer() - start_time) / 60, 1)
-            sample_gdf.to_file(f'{self.directory}/{self.municipality}_{file_prefix}_na.geojson', driver='GeoJSON')
-            # try: sample_gdf.to_file(self.gpkg, layer=f'network_analysis_{prefix}', driver='GPKG', encoding="ISO-8859-1")
-            # except: print("!!! Results not saved to GeoPackage !!!")
-            print(f'Network analysis processed in {elapsed} minutes @ {datetime.datetime.now()}, regressing data')
+            sample_gdf.to_feather(f'{self.directory}/Network/{self.municipality}_{file_prefix}_na.feather')
+            print(f'Network analysis processed in {elapsed} minutes @ {datetime.datetime.now()}')
 
-            # Get name of features analyzed within the service areas
-            r_ftr_list = []
-            for i, col in enumerate(sample_gdf.columns):
-                for radius in service_areas:
-                    id_col = f'_r{radius}_'
-                    if id_col in col:
-                        r_ftr_list.append(col)
-            boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
-            r_geometry = [boundary.at[0, 'geometry'].centroid for feature in r_ftr_list]
-            r_features = gpd.GeoDataFrame({'features':r_ftr_list, 'geometry':r_geometry})
-            r_features.to_file(self.gpkg, layer=f'{file_prefix}_aggregated_features')
-            r_features.to_csv(f'{self.directory}/{self.municipality}_na_reg_{file_prefix}.csv')
+            # # Get name of features analyzed within the service areas
+            # r_ftr_list = []
+            # for i, col in enumerate(sample_gdf.columns):
+            #     for radius in service_areas:
+            #         id_col = f'_r{radius}_'
+            #         if id_col in col:
+            #             r_ftr_list.append(col)
+            # boundary = gpd.read_file(self.gpkg, layer='land_municipal_boundary')
+            # r_geometry = [boundary.at[0, 'geometry'].centroid for feature in r_ftr_list]
+            # r_features = gpd.GeoDataFrame({'features':r_ftr_list, 'geometry':r_geometry})
+            # r_features.to_file(self.gpkg, layer=f'{file_prefix}_aggregated_features')
+            # r_features.to_csv(f'{self.directory}{self.municipality}_na_reg_{file_prefix}.csv')
 
-            return sample_gdf, r_features
+            return sample_gdf
 
     def network_from_polygons(self, filepath='.gpkg', layer='land_assessment_parcels', remove_islands=False,
                               scale_factor=0.82, tolerance=4, buffer_radius=10, min_lsize=20, max_linters=0.5):
@@ -1230,7 +1298,7 @@ class GeoBoundary:
             gdf = self.DAs.loc[self.DAs.geometry.area < max_area]
             layer = 'land_dissemination_area'
 
-        # Pre process database for elementslab 1600x1600m 'Sandbox'
+        # Pre process database for UrbanMobility 1600x1600m 'Sandbox'
         elif unit == 'elab_sandbox':
             self.directory = 'Sandbox/'+elab_name
             self.gpkg = elab_name+'.gpkg'
@@ -1339,7 +1407,7 @@ class GeoBoundary:
                         lat = str(int(pt_gdf.geometry.y[0]))
                         filename = 'N' + lat + 'W' + lon + '.hgt'
                         # Extract elevation data from .hgt file and add it to dictionary
-                        elevation = self.elevation(self.directory+'Topography/' + filename,
+                        elevation = self.elevation(self.directory+'/Topography/' + filename,
                                                    lon=pt_gdf.geometry.x[0], lat=pt_gdf.geometry.y[0])
                         elevations[key].append(elevation)
                         elevations[key].sort()
@@ -1720,7 +1788,7 @@ class GeoBoundary:
         links_gdf = gpd.read_file(self.gpkg, layer='network_links')
 
         # Setup directory parameters
-        save_dir = f"{self.directory}Reports/"
+        save_dir = f"{self.directory}/Reports/"
         if 'Reports' in os.listdir(self.directory): pass
         else: os.mkdir(save_dir)
         if self.municipality in os.listdir(save_dir): pass
@@ -1814,7 +1882,7 @@ class GeoBoundary:
         boundaries.plot(ax=ax, color='black', linewidth=0.2, linestyle='solid', alpha=0.6)
         centroids.plot(ax=ax, color='#88D2D5', markersize=0.2)
         plt.axis('off')
-        plt.savefig('Diagrams/'+self.municipality+' - Mobility Diagram.png', dpi=600)
+        plt.savefig('Diagrams/'+self.municipality+' - UrbanMobility Diagram.png', dpi=600)
 
         return self
 
@@ -1831,7 +1899,7 @@ class GeoBoundary:
                                     (self.properties['n_use'] == 'entertainment')]
         dest_gdf['geometry'] = dest_gdf.geometry.centroid
         dest_gdf.drop_duplicates('geometry')
-        dest_gdf.to_file(self.directory+'Shapefiles/'+self.municipality+' - Destinations.shp', driver='ESRI Shapefile')
+        dest_gdf.to_file(self.directory+'/Shapefiles/'+self.municipality+' - Destinations.shp', driver='ESRI Shapefile')
         return self
 
     def export_parcels(self):
@@ -1861,20 +1929,20 @@ if __name__ == '__main__':
     NETWORK_STATS = False
     VERSIONS = ["", '2']
 
-    proxy = GeoBoundary(municipality=f'Hillside Quadra Proxy', crs=26910)
+    proxy = Network(municipality=f'Hillside Quadra Proxy', crs=26910)
     proxy.align_network_edges()
 
-    osm = GeoBoundary(municipality='Victoria, British Columbia', crs=26910)
-    osm.update_databases(bound=False, net=False)
-    osm.centrality(axial=True)
+    osm = Network(municipality='Victoria, British Columbia', crs=26910)
+    osm.update_databases(run=False, bound=False, net=False)
+    osm.centrality(run=False, axial=True)
 
-    real_auto = GeoBoundary(municipality=f'Hillside Quadra', crs=26910)
+    real_auto = Network(municipality=f'Hillside Quadra', crs=26910)
     if BUILD_REAL_NETWORK: real_auto.network_from_polygons(
         filepath="/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Hillside Quadra.gpkg",
         layer='land_blocks', scale_factor=0.84, buffer_radius=11, max_linters=0.40)
 
     for VERSION in VERSIONS:
-        proxy = GeoBoundary(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
+        proxy = Network(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
         if BUILD_PROXY_NETWORK: proxy.network_from_polygons(
             filepath=f"/Users/nicholasmartino/GoogleDrive/Geospatial/Databases/Hillside Quadra Proxy{VERSION}.gpkg",
             layer='land_parcels', scale_factor=0.80, buffer_radius=10, max_linters=0.25, remove_islands=False)
@@ -1883,7 +1951,7 @@ if __name__ == '__main__':
         real_auto.centrality()
         rrep = real_auto.network_report()
         for VERSION in VERSIONS:
-            proxy = GeoBoundary(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
+            proxy = Network(municipality=f'Hillside Quadra Proxy{VERSION}', crs=26910)
             proxy.centrality()
         prep = proxy.network_report()
         print(rrep - prep)

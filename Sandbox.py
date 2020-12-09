@@ -29,6 +29,9 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     parcels2 = gpd.read_file(local_gbd.gpkg, layer=f'land_parcels_{exp}')
     parcels2['OBJECTID'] = [i for i in range(len(parcels2))]
 
+    # Rename land use standards
+    parcels2 = parcels2.rename({'RS_SF_A': 'SFA', 'RS_MF_L': 'MFL', 'RS_MF_H': 'MFH','RS_SF_D': 'SFD'})
+
     if 'OBJECTID' not in parcels2.columns:
         print("!!! OBJECTID column not found on parcels !!!")
 
@@ -62,14 +65,16 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     dss_are = parcels2
     try: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
     except: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
-    dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['Shape_Area']
-    try: dss_are["n_dwellings"] = pcl_bdg.sum()['n_res_unit'].values
-    except: dss_are["n_dwellings"] = pcl_bdg.sum()['res_units_bdg'].values
+    dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['area']
+
+    n_dwell = ['n_res_unit', 'res_units_bdg']
+    for col in n_dwell:
+        if col in pcl_bdg_raw.columns:
+            dss_are["n_dwellings"] = pcl_bdg.sum()[col].values
 
     print("> Adapting parcels to assessment fabric")
     ass_fab = parcels2
-    try: ass_fab["n_use"] = [u[0] for u in pcl_bdg['Landuse_pcl'].unique()]
-    except: ass_fab["n_use"] = [u[0] for u in pcl_bdg['LANDUSE_pcl'].unique()]
+
     ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
     ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
     ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
@@ -77,17 +82,30 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
     ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
     ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
-    try: ass_fab["total_finished_area"] = (pcl_bdg.sum()['floor_area'] * pcl_bdg.mean()['maxstories']).values
-    except: ass_fab["total_finished_area"] = (pcl_bdg.sum()['floor_area_bdg'] * pcl_bdg.mean()['maxstories']).values
-    try: ass_fab["gross_building_area"] = (pcl_bdg.sum()['ftprt_area'] * pcl_bdg.mean()['maxstories']).values
-    except: ass_fab["gross_building_area"] = (pcl_bdg.sum()['Shape_Area_bdg'] * pcl_bdg.mean()['maxstories']).values
-    try:
-        for n_bedrms_col in ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg']:
-            try:
-                ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[n_bedrms_col].values
-                break
-            except: pass
-    except: pass
+
+    land_use = ['LANDUSE', 'Landuse_pcl', 'LANDUSE_pcl']
+    for col in land_use:
+        if col in pcl_bdg_raw.columns:
+            ass_fab["n_use"] = [u[0] for u in pcl_bdg[col].unique()]
+
+    floor_area = ['floor_area', 'floor_area_bdg']
+    for col in floor_area:
+        if col in pcl_bdg_raw.columns:
+            ass_fab["total_finished_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+
+    # Get floor area from FAR if specific field does not exist
+    if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
+        ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
+
+    # ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
+    # for col in floor_area:
+    #     if col in pcl_bdg_raw.columns:
+    #         ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+    #
+    # n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
+    # for col in n_bed:
+    #     if col in pcl_bdg_raw.columns:
+    #         ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[col].values
 
     print("> Calculating diversity indices")
 
@@ -128,10 +146,10 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
             stops.at[i, 'frequency'] = 32  # 1.3 trips per hour
             stops.at[i, 'frequency_2020'] = 32  # 1.3 trips per hour
             stops.at[i, 'frequency_2040'] = 32  # 1.3 trips per hour
-        if stops.iloc[i]['geometry'].within(rapid2040):
+        if stops.iloc[i]['geometry'].within(rapid2040) & yr >= 2040:
             stops.at[i, 'frequency'] = 48 # 2 trips per hour
             stops.at[i, 'frequency_2040'] = 48 # 2 trips per hour
-        if stops.iloc[i]['geometry'].within(freqt2040) & yr == 2040:
+        if stops.iloc[i]['geometry'].within(freqt2040) & yr >= 2040:
             stops.at[i, 'frequency'] = 192 # 8 trips per hour
             stops.at[i, 'frequency_2040'] = 192 # 8 trips per hour
     stops = stops.fillna(0)

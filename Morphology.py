@@ -22,75 +22,50 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
+import gc
+import io
 import math
+import time
+import zipfile
 
 import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
-from Analyst import GeoBoundary
+import requests
+
+from shapely import affinity
 from shapely import ops
 from shapely.geometry import Point, LineString, Polygon
 
 
-class Isovist:
-    def __init__(self, origin, barriers, radius=500):
-        self.origin = origin
-        self.barriers = barriers
-        self.barriers_index = barriers.sindex
-        self.radius = radius
 
-        return
-
-    def create(self, tolerance=100):
-
-        # Buffer origin point according to radius
-        buffer = self.origin.buffer(self.radius).simplify(tolerance=tolerance)
-
-        # Create view lines crossing over barriers
-        lines = gpd.GeoDataFrame(
-            {'geometry':[LineString([self.origin, Point(pt_cds)]) for pt_cds in buffer.boundary.coords]}, geometry='geometry'
-        )
-        print(lines.sindex)
-
-        # Filter barriers using spatial index
-        barriers = self.barriers.iloc[list(self.barriers_index.intersection(lines.total_bounds))]
-        print(barriers.sindex)
-
-        # Remove barriers from view lines
-        lines_diff = gpd.overlay(lines, barriers, how='difference')
-
-        # Extract lines that intersects with origin
-        lines_orig = []
-        for geom in lines_diff['geometry']:
-            if (geom.__class__.__name__ == 'LineString') and (geom.distance(self.origin) == 0):
-                lines_orig.append(geom)
-            elif geom.__class__.__name__ == 'MultiLineString':
-                for line in geom:
-                    if line.distance(self.origin) == 0:
-                        lines_orig.append(line)
-
-        # Create isovist polygon
-        isovist = Polygon([Point(line.coords[0]) for line in lines_orig])
-
-        return isovist
 
 
 class Buildings:
-    def __init__(self, gdf, group_by=None, gb_func=None, to_crs=None):
-        self.gdf = gdf.copy()
-        self.gdf['area'] = self.gdf['geometry'].area
-        self.gdf = self.gdf.sort_values('area', ascending=False)
+    def __init__(self, gdf, group_by=None, gb_func=None, crs=26910, to_crs=None):
+        gdf = gdf.reset_index()
 
-        if to_crs is not None:
-            self.gdf = self.gdf.to_crs(to_crs)
+        # Set/Adjust coordinate reference system
+        if gdf.crs is None: gdf.crs = crs
+        if to_crs is not None: gdf = gdf.to_crs(to_crs)
 
         if group_by is not None:
             if gb_func is not None:
-                self.gdf = self.gdf.groupby(group_by, as_index=False).agg(gb_func)
+                gdf = gdf.groupby(group_by, as_index=False).agg(gb_func)
 
-        self.gdf['area'] = [geom.area for geom in self.gdf['geometry']]
-        self.gdf['perimeter'] = [geom.length for geom in self.gdf['geometry']]
-        self.gdf['n_vertices'] = [len(geom.exterior.coords) for geom in self.gdf['geometry']]
+            gdf = gpd.GeoDataFrame(gdf, geometry='geometry', crs=to_crs)
+            gdf = gdf.dissolve(by=group_by)
 
+        # For City of Vancouver open data:
+        if 'topelev_m' in gdf.columns: gdf['height'] = gdf['topelev_m'] - gdf['baseelev_m']
+
+        # Get polygon-specific measures
+        gdf = Shape(gdf).process()
+
+        self.gdf = gdf
+        self.crs = crs
+        print("Buildings object created")
         return
 
     def convex_hull(self):
@@ -159,29 +134,125 @@ class Buildings:
         gdf = self.gdf.copy()
         return gdf
 
+    def skeleton(self):
+        skeletons = Skeleton(gdf=self.gdf, crs=self.crs)
+        return skeletons
+
     def all(self):
+        print("> Calculating all indicators for Buildings")
         self.gdf = self.convex_hull()
         self.gdf = self.bounding_box()
         self.gdf = self.triangulate()
         self.gdf = self.centroid()
         self.gdf = self.encl_circle()
-        return self.gdf
+        return gpd.GeoDataFrame(self.gdf, crs=self.crs)
 
 
-class Streets:
-    def __init__(self, gdf, crs=26910, widths=None, trees=None):
-        self.gdf = gdf.to_crs(crs)
-        self.barriers = gpd.read_file(f'{directory}/building-footprints-2009.geojson').to_crs(crs)
-        self.trees = trees
-        self.widths = widths
+class Parcels:
+    def __init__(self, gdf, buildings, crs=26910):
+        # Clean self-intersecting polygons
+        print("Cleaning self-intersecting geometries")
+        gdf['geometry'] = [geom if geom.is_valid else geom.buffer(0) for geom in gdf['geometry']]
+        gdf = gdf.set_geometry('geometry')
+
+        # Create parcels ids
+        gdf['id'] = gdf.index
+
+        # Join parcel id to buildings
+        gdf.crs = crs
+        buildings.gdf['polygon'] = buildings.gdf['geometry']
+        buildings.gdf['geometry'] = buildings.gdf.centroid
+        start_time = time.time()
+        print(f"Joining information from buildings {buildings.gdf.sindex} to parcels {gdf.sindex}")
+        buildings.gdf['parcel_id'] = gpd.sjoin(buildings.gdf, gdf.loc[:, ['geometry']], how="left", op="within").groupby(by='id')['index_right'].first()
+        buildings.gdf['geometry'] = buildings.gdf['polygon']
+        print(f"Data from buildings joined to parcels in {(time.time() - start_time)/60} minutes")
+
+        # Get polygon-specific measures
+        gdf = Shape(gdf).process()
+
+        self.gdf = gdf
+        self.buildings = buildings
+        print ("Parcels object created")
+        return
+
+    def shape(self):
+        gdf = self.gdf.copy()
+        gdf = Buildings(gdf).all()
+        return gdf
+
+    def occupation (self):
+        gdf = self.gdf.copy()
+        buildings = self.buildings.gdf.copy()
+
+        for i in gdf['id']:
+            parcel_buildings = buildings[buildings['parcel_id'] == i]
+
+            if len(parcel_buildings) > 0:
+                gdf.at[i, 'coverage'] = (parcel_buildings['area'].sum()/gdf[gdf['id'] == i].area).values
+
+        return gdf
+
+    def plot_boundaries(self):
+
+
+        return
+
+
+class Blocks:
+    def __init__(self, gdf, parcels, streets, crs=26910):
+
+        gdf = gdf.dropna().reset_index()
+        gdf.crs = crs
+
+        # Trim dissolved blocks with streets
+        if streets is not None:
+            width = 2
+            streets.gdf['geometry'] = streets.gdf.buffer(width)
+            print(streets.gdf.sindex)
+            gdf = gpd.overlay(gdf, streets.gdf, how='difference').reset_index()
+
+        # Create block id and join to buildings and parcels
+        gdf['id'] = gdf.index
+        parcels.gdf['block_id'] = gpd.sjoin(parcels.gdf, gdf.loc[:, ['geometry']], how="left").groupby(by='id')['index_right'].first()
+        parcels.buildings.gdf['block_id'] = gpd.sjoin(parcels.buildings.gdf, gdf.loc[:, ['geometry']], how="left").groupby(by='id')['index_right'].first()
+
+        for i in gdf['id']:
+            gdf.loc[gdf['id'] == i, 'n_parcels'] = len(parcels.gdf[parcels.gdf['block_id'] == i])
+            gdf.loc[gdf['id'] == i, 'n_buildings'] = len(parcels.buildings.gdf[parcels.buildings.gdf['block_id'] == i])
+
+        self.gdf = gdf
+        self.parcels = parcels
+        self.crs = crs
+        print("Blocks object created")
         return
 
     def dimension(self):
         gdf = self.gdf.copy()
 
+        gdf['area'] = [geom.area for geom in gdf['geometry']]
+        gdf['perimeter'] = [geom.length for geom in gdf['geometry']]
+
+        return gdf
+
+
+class Streets:
+    def __init__(self, gdf, buildings, crs=26910, widths=None, trees=None):
+        self.gdf = gdf.to_crs(crs)
+        self.barriers = buildings.gdf
+        self.trees = trees
+        self.widths = widths
+        self.crs = crs
+        print("Streets object created")
+        return
+
+    def dimension(self):
+        gdf = self.gdf.copy().reset_index()
+
         print("> Cleaning street widths")
         if self.widths is not None:
             widths = gpd.read_file(self.widths)
+            widths = widths.to_crs(self.crs)
 
             # Clean data from City of Vancouver open data catalogue
             for i in widths.index:
@@ -204,23 +275,26 @@ class Streets:
                 else: widths.at[i, 'width'] = float(widths.loc[i, 'width'])
 
             # Buffer street segments based on average street width
-            ave_width = widths['width'].mean()
-            buf_seg = gpd.GeoDataFrame({
-                'id': [i for i in gdf.index],
-                'geometry': gdf.buffer(ave_width)
-            }, geometry='geometry')
+            widths = widths[widths['width'] < 100]
+            widths.crs = self.crs
+            widths.to_file(f'{directory}/row.shp', driver='ESRI Shapefile')
+            widths['geometry'] = widths.buffer(10)
+
             gdf['id'] = gdf.index
-            gdf = pd.merge(gdf, gpd.sjoin(buf_seg, widths, how='left'), on='id', copy=False)
-            gdf['geometry'] = gdf['geometry_x']
-            gdf = gdf.drop_duplicates(subset=['geometry'])
-            if 'width_y' in gdf.columns:
-                gdf['width'] = gdf['width_y']
-                gdf = gdf.drop('width_y', axis=1)
-            gdf = gdf.drop(['geometry_x', 'geometry_y'], axis=1)
+            joined = gpd.sjoin(gdf, widths, how='left')
+            joined['width'] = pd.to_numeric(joined['width'])
+            joined = joined.groupby('id', as_index=False).mean()
+            joined = pd.merge(gdf, joined, on='id', copy=False)
+            joined['geometry'] = list(gdf.loc[gdf['id'].isin(joined['id'])]['geometry'])
+
+            # Replace NaN values
+            print(f'Width information from {joined["width"].isna().sum()} features could not be joined')
+            for use in joined['streetuse'].unique():
+                joined.loc[(joined['streetuse'] == use) & (joined['width'].isna()), 'width'] = joined[joined['streetuse'] == use]['width'].mean()
         else: print('Widths layer not found!')
 
-        gdf['length'] = [geom.length for geom in gdf['geometry']]
-        return gdf
+        joined['length'] = [geom.length for geom in joined['geometry']]
+        return joined
 
     def direction(self):
         gdf = self.gdf.copy()
@@ -237,6 +311,7 @@ class Streets:
 
         gdf['shortest'] = shortest
 
+        # Calculate straightness
         print("> Calculating straightness")
         gdf['straight'] = gdf['shortest']/gdf['length']
 
@@ -244,66 +319,243 @@ class Streets:
         print("> Calculating azimuth")
         gdf['azimuth'] = [math.degrees(math.atan2((ln.xy[0][1] - ln.xy[0][0]), (ln.xy[1][1] - ln.xy[1][0]))) for ln in
                             gdf.geometry]
+
+        # Get one way streets from OpenStreetMap
+
         return gdf
 
     def connectivity(self):
-        gdf = self.gdf.copy()
+        gdf = self.gdf.copy().reset_index()
+        gdf['id'] = gdf.index
+        buffer = gpd.GeoDataFrame(gdf.buffer(1), columns=['geometry'], crs=26910)
+        buffer.to_file(f'{directory}/street_segs_buffer.geojson', drive='GeoJSON')
 
-        print("> Calculating connections")
-        gdf['conn'] = p
+        print(f"> Calculating connections between {buffer.sindex} and {gdf.sindex}")
+        overlay = gpd.overlay(gdf, buffer, how='intersection')
+        gdf['conn'] = [len(overlay[overlay['id'] == i]) for i in gdf['id'].unique()]
         gdf['deadend'] = [1 if gdf.loc[i, 'conn'] < 2 else 0 for i in gdf.index]
         return gdf
 
     def visibility(self):
         gdf = self.gdf.copy()
+        c_gdf = self.gdf.copy()
+        c_gdf.crs = self.crs
+
         print("> Generating isovists")
-        gdf['isovists'] = [Isovist(origin=geom.centroid, barriers=self.barriers).create() for geom in gdf['geometry']]
+        c_gdf['geometry'] = c_gdf.centroid
+        gdf['isovists'] = Isovist(origins=c_gdf, barriers=self.barriers).create()
         gdf['iso_area'] = [geom.area for geom in gdf['isovists']]
         gdf['iso_perim'] = [geom.length for geom in gdf['isovists']]
-        return gdf
+        gdf.drop(['geometry'], axis=1).set_geometry('isovists').to_file(f'{directory}/isovists.geojson', driver='GeoJSON')
+        return gdf.drop(['isovists'])
 
     def greenery(self):
         gdf = self.gdf.copy()
         if self.trees is not None:
             trees = gpd.read_file(self.trees)
+            trees = trees.dropna(subset=['geometry'])
+            trees.crs = self.crs
+            print(trees.sindex)
+
+            # Buffer streets geometries
+            if 'width' not in gdf.columns:
+                buffer = gpd.GeoDataFrame(gdf.buffer(10), columns=['geometry'], crs=26910)
+            else:
+                buffer = gpd.GeoDataFrame([g.buffer(w/2) for g, w in zip(gdf['geometry'], gdf['width'])], columns=['geometry'], crs=26910)
+            buffer['id'] = buffer.index
+            buffer.crs = self.crs
+            print(buffer.sindex)
+
+            # Overlay trees and street buffers
+            overlay = gpd.overlay(trees, buffer, how='intersection')
+            gdf['n_trees'] = [len(overlay[overlay['id'] == i]) for i in buffer['id'].unique()]
+            gdf.crs = self.crs
         else: print("Trees layer not found!")
         return gdf
 
     def all(self):
-        self.gdf = self.dimension()
-        self.gdf = self.direction()
-        self.gdf = self.visibility()
+        print("> Calculating all indicators for Streets")
+        # self.gdf = self.dimension()
+        # self.gdf = self.direction()
         # self.gdf = self.connectivity()
-        # self.gdf = self.greenery()
+
+        try:
+            iso_gdf = gpd.read_file(f'{directory}/isovists.geojson').loc[:, ['iso_area', 'iso_perim']]
+            iso_gdf['id'] = iso_gdf.index
+            self.gdf['id'] = self.gdf.index
+            self.gdf = pd.merge(self.gdf, iso_gdf, how="left", copy=False, on='id')
+        except:
+            print("> Isovists not found")
+            self.gdf = self.visibility()
+
+        self.gdf = self.greenery()
+        self.gdf.crs = self.crs
         return self.gdf
 
+
+class Neighborhood:
+    def __init__(self):
+        print("Neighborhood object created")
+        return
+
+    def interconnect(self, min_area=4000, max_cont=1.15):
+        return
+
+
 if __name__ == '__main__':
-    directory = '/Volumes/Samsung_T5/Databases/CityOpenData'
+
+    # Download BC footprints from StatCan
+    zipfile.ZipFile(
+        io.BytesIO(requests.get(
+            'https://www150.statcan.gc.ca/n1/fr/pub/34-26-0001/2018001/ODB_v2_BritishColumbia.zip?st=qdcH3z04').content)
+    ).extractall('tmp/')
+    print("Footprint data downloaded")
+
+    ### Buildings ###
+    building_gdf = gpd.read_file(filename='tmp/ODB_BritishColumbia/odb_britishcolumbia.shp')
+    building_gdf.crs = 3347
+    building_gdf = building_gdf.to_crs(26910)
+    bld = Buildings(
+        gdf=building_gdf, to_crs=26910, group_by='Build_ID',
+        # City of Vancouver:
+        # gdf=gpd.read_file('https://opendata.vancouver.ca/explore/dataset/building-footprints-2009/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910'),# gpd.read_file(f'{directory}/building-footprints-2009.geojson'),
+        # gb_func={
+        #     'rooftype': 'max',
+        #     'baseelev_m': 'min',
+        #     'topelev_m': 'max',
+        #     'maxht_m': 'max',
+        #     'med_slope':'mean',
+        #     'geometry': 'first'
+        # }
+    )
+
+    # Download parcels from BC government open data
+    zipfile.ZipFile(
+        io.BytesIO(requests.get(
+            'https://pub.data.gov.bc.ca/datasets/4cf233c2-f020-4f7a-9b87-1923252fbc24/pmbc_parcel_fabric_poly_svw.zip').content)
+    ).extractall('tmp/')
+    print("Parcel data downloaded")
+
+    ### Parcels ###
+    parcel_gdf = gpd.read_file(filename='tmp/pmbc_parcel_fabric_poly_svw.gdb', layer='pmbc_parcel_fabric_poly_svw')
+    parcel_gdf.crs = 3005
+    parcel_gdf = parcel_gdf.to_crs(26910)
+    pcl = Parcels(
+        gdf=parcel_gdf,
+        buildings=bld
+        # City of Vancouver:
+        # gdf=gpd.read_file('https://opendata.vancouver.ca/explore/dataset/property-parcel-polygons/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910'),
+    )
+    pcl.gdf = pcl.occupation()
+    pcl.gdf = pcl.gdf[(pcl.gdf.area > 2000) & (pcl.gdf.coverage > 0.2) & (pcl.gdf.elongation < 0.2)]
+
+    # Plot parcel boundaries and building footprints
+    pcl_boundary = pcl.gdf.copy()
+    pcl_boundary['geometry'] = [geom for geom in pcl_boundary.boundary]
+    pcl_boundary = pcl_boundary.set_geometry('geometry')
+
+    # Filter parcels with buildings overlapping its boundary
+    bld.gdf = gpd.overlay(bld.gdf, pcl.gdf, how='intersection')
+
+    # Make a convex hull around largest parcel that will be plotted along with all other parcels to standardize the scale
+    largest = bld.gdf.sort_values('area_1', ignore_index=True, ascending=False).iloc[0]['geometry'].convex_hull
+    largest_centroid = largest.centroid
+
+    print("Plotting parcels and footprint skeletons")
+    parcel_ids = pcl.gdf.id
+    for k, (j, t) in enumerate(zip(parcel_ids, tqdm(range(len(parcel_ids))))):
+
+        # Move convex hull to parcel to standardize the plot scale
+        p_centroid = pcl.gdf[pcl.gdf['id'] == j].centroid
+        largest_overlap = affinity.translate(largest, (p_centroid.x - largest_centroid.x).values, (p_centroid.y - largest_centroid.y).values)
+        moved = gpd.GeoDataFrame({'geometry': [largest_overlap]}, geometry='geometry')
+
+        j = int(j)
+
+        # Filter buildings with this parcel id
+        footprints = bld.gdf[bld.gdf['parcel_id'] == j]
+
+        if len(footprints) > 0:
+
+            if k < (0.8 * len(parcel_ids)):
+                # Plot footprint, boundary and parcel
+                fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+
+                moved.plot(ax=ax[0], color='white')
+                moved.plot(ax=ax[1], color='white')
+
+                pcl.gdf[pcl.gdf['id'] == j].plot(ax=ax[0], color='green')
+                pcl.gdf[pcl.gdf['id'] == j].plot(ax=ax[1], color='green')
+
+                pcl_boundary[pcl_boundary['id'] == j].plot(ax=ax[0], color='red')
+                pcl_boundary[pcl_boundary['id'] == j].plot(ax=ax[1], color='red')
+
+                footprints.plot(ax=ax[0], color='blue')
+
+                ax[0].set_axis_off()
+                ax[1].set_axis_off()
+                fig.savefig(f'../pix2pix/data/footprints/train/{j}.jpg', dpi=256)
+                plt.close()
+
+            else:
+                # Plot footprint, boundary and parcel
+                fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+
+                moved.plot(ax=ax[0], color='white')
+                moved.plot(ax=ax[1], color='white')
+
+                pcl.gdf[pcl.gdf['id'] == j].plot(ax=ax[1], color='green')
+                pcl.gdf[pcl.gdf['id'] == j].plot(ax=ax[0], color='green')
+
+                pcl_boundary[pcl_boundary['id'] == j].plot(ax=ax[1], color='red')
+                pcl_boundary[pcl_boundary['id'] == j].plot(ax=ax[0], color='red')
+
+                footprints.plot(ax=ax[0], color='blue')
+
+                ax[0].set_axis_off()
+                ax[1].set_axis_off()
+
+                fig.savefig(f'../pix2pix/data/footprints/val/{j}.jpg', dpi=256)
+                plt.close()
+
+    ### City of Vancouver project indicators ###
+    directory = '/Volumes/ELabs/50_projects/20_City_o_Vancouver/SSHRC Partnership Engage/Data/Shapefiles'
     gbd = GeoBoundary('Vancouver, British Columbia')
 
-    # Streets
-    s = gpd.GeoDataFrame(Streets(
-        gdf = gpd.read_file('https://opendata.vancouver.ca/explore/dataset/public-streets/download/?format=geojson&timezone=America/Los_Angeles&lang=en'),
-        widths='https://opendata.vancouver.ca/explore/dataset/right-of-way-widths/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910',
-        trees='https://opendata.vancouver.ca/explore/dataset/street-trees/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910'
-    ).all())
-    s = s.drop(
-        ['from', 'to', 'name', 'lanes', 'service', 'ref', 'width_x', 'bridge', 'access', 'est_width', 'tunnel',
-         'junction', 'index_right'], axis=1)
-    s.to_file(f'{directory}/street-segments.shp', driver='ESRI Shapefile')
+    ### Streets ###
+    stt = Streets(
+        gdf=gpd.read_file(f'{directory}/street_row/street_row.shp'),
+        widths=f'{directory}/right-of-way-widths.shp',
+        trees='https://opendata.vancouver.ca/explore/dataset/street-trees/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910',
+        buildings=bld
+    )
 
-    # Buildings
-    b = gpd.GeoDataFrame(Buildings(
-        gdf=gpd.read_file(f'{directory}/building-footprints-2009.geojson'),
-        to_crs=26910,
-        group_by='bldgid',
-        gb_func={
-            'rooftype': 'max',
-            'baseelev_m': 'min',
-            'topelev_m': 'max',
-            'maxht_m': 'max',
-            'med_slope':'mean',
-            'geometry': 'first'
-        }
-    ).all())
-    b.to_file(f'{directory}/building-footprints.shp', driver='ESRI Shapefile')
+    ### Blocks ###
+    blocks = Blocks(
+        gdf=gpd.read_file('https://opendata.vancouver.ca/explore/dataset/block-outlines/download/?format=geojson&timezone=America/Los_Angeles&lang=en&epsg=26910'),
+        parcels=pcl,
+        streets=stt
+    )
+
+    ### Calculate indicators ###
+    blocks.gdf = blocks.dimension()
+    blocks.gdf.to_file(f'{directory}/Blocks.shp', driver='ESRI Shapefile')
+    print("Blocks indicators calculated and exported")
+    # public = gpd.read_file('https://opendata.vancouver.ca/explore/dataset/public-streets/download/?format=geojson&timezone=America/Los_Angeles&lang=en')
+    # lanes = gpd.read_file('https://opendata.vancouver.ca/explore/dataset/lanes/download/?format=geojson&timezone=America/Los_Angeles&lang=en')
+    # lanes['streetuse'] = "Lane"
+    # gdf = pd.concat([public, lanes]).to_crs(26910)
+
+    pcl.gdf = pcl.shape_indicators()
+    pcl.gdf.to_file(f'{directory}/Parcels.shp', driver='ESRI Shapefile')
+    print("Parcels indicators calculated and exported")
+
+    pcl.buildings.gdf = pcl.buildings.all()
+    pcl.buildings.gdf.to_file(f'{directory}/Buildings.shp', driver='ESRI Shapefile')
+    print("Buildings indicators calculated and exported")
+
+    stt.gdf = stt.all()
+    stt.gdf = stt.gdf.drop(['std_street', 'from_hundred_block', 'hblock', 'id', 'index_right', 'width_m'], axis=1)
+    stt.gdf = stt.gdf.loc[stt.gdf['streetuse'].isin([i for i in stt.gdf['streetuse'].unique() if i not in ['Closed', 'Leased', 'Recreational']])]
+    stt.gdf.to_file(f'{directory}/Streets.shp', driver='ESRI Shapefile')
+    print("Streets indicators calculated and exported")
