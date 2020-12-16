@@ -2,6 +2,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from shapely.geometry import Point
+from Morphology import Streets
 from skbio import diversity
 
 
@@ -30,7 +31,7 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     parcels2['OBJECTID'] = [i for i in range(len(parcels2))]
 
     # Rename land use standards
-    parcels2 = parcels2.rename({'RS_SF_A': 'SFA', 'RS_MF_L': 'MFL', 'RS_MF_H': 'MFH','RS_SF_D': 'SFD'})
+    parcels2 = parcels2.replace({'RS_SF_A': 'SFA', 'RS_MF_L': 'MFL', 'RS_MF_H': 'MFH', 'RS_SF_D': 'SFD'})
 
     if 'OBJECTID' not in parcels2.columns:
         print("!!! OBJECTID column not found on parcels !!!")
@@ -67,7 +68,7 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     except: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
     dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['area']
 
-    n_dwell = ['n_res_unit', 'res_units_bdg']
+    n_dwell = ['n_res_unit', 'res_units_bdg', 'n_res_unit_bdg']
     for col in n_dwell:
         if col in pcl_bdg_raw.columns:
             dss_are["n_dwellings"] = pcl_bdg.sum()[col].values
@@ -97,17 +98,17 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
         ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
 
-    # ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
-    # for col in floor_area:
-    #     if col in pcl_bdg_raw.columns:
-    #         ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
-    #
-    # n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
-    # for col in n_bed:
-    #     if col in pcl_bdg_raw.columns:
-    #         ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[col].values
+    ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
+    for col in ftprt_area:
+        if col in pcl_bdg_raw.columns:
+            ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
 
-    print("> Calculating diversity indices")
+    n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
+    for col in n_bed:
+        if col in pcl_bdg_raw.columns:
+            ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[col].values
+
+    # print("> Calculating diversity indices")
 
     # # Diversity of bedrooms
     # df_ddb = pd.DataFrame()
@@ -127,11 +128,11 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     # dss_are["dwelling_div_rooms_si"] = [diversity.alpha_diversity("simpson", df_ddr)[0] for i in range(len(dss_are))]
     # dss_are["dwelling_div_rooms_sh"] = [diversity.alpha_diversity("shannon", df_ddr)[0] for i in range(len(dss_are))]
 
-    init_streets = gpd.read_file(local_gbd.gpkg, layer='network_links')
+    init_streets = gpd.read_file(local_gbd.gpkg, layer='network_walk')
     streets = init_streets
     streets["length"] = streets.geometry.length
     cycling = streets[streets[f"cycle_{yr}"] == 1]
-    cycling['cycle_length'] = cycling.geometry.length
+    cycling['length'] = cycling.geometry.length
 
     print("> Joining transit frequency data")
     stops = gpd.GeoDataFrame({
@@ -158,13 +159,19 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     if len(streets) < len(init_streets):
         print("!!! Streets line count smaller than initial !!!")
 
+    # Get morphological indicators
+    for name, gdf in {'walk': streets, 'drive': streets, 'bike': cycling}.items():
+        streets = Streets(gdf)
+        streets.gdf = streets.dimension()
+        streets.gdf = streets.direction()
+        streets.gdf[f'{name}_length'] = streets.gdf['length'].astype(int)
+        streets.gdf[f'{name}_straight'] = streets.gdf['straight']
+        streets.gdf.to_file(local_gbd.gpkg, layer=f'network_{name}', encoding='ISO-8859-1')
+
     stops.to_file(local_gbd.gpkg, layer='network_stops', encoding='ISO-8859-1')
-    streets.to_file(local_gbd.gpkg, layer='network_links', encoding='ISO-8859-1')
-    cycling.to_file(local_gbd.gpkg, layer='network_cycle', encoding='ISO-8859-1')
     ass_fab.to_file(local_gbd.gpkg, layer='land_assessment_fabric', encoding='ISO-8859-1')
     parcels2.to_file(local_gbd.gpkg, layer='land_assessment_parcels', encoding='ISO-8859-1')
     dss_are.to_file(local_gbd.gpkg, layer='land_dissemination_area', encoding='ISO-8859-1')
-
     return local_gbd
 
 def proxy_network(local_gbd, run=True):
@@ -207,7 +214,9 @@ def proxy_network(local_gbd, run=True):
             print("!!! Streets line count smaller than initial !!!")
 
         nodes.to_file(local_gbd.gpkg, layer='network_intersections')
-        streets.to_file(local_gbd.gpkg, layer='network_links')
+        streets.to_file(local_gbd.gpkg, layer='network_walk')
+        streets.to_file(local_gbd.gpkg, layer='network_drive')
+        streets.to_file(local_gbd.gpkg, layer='network_all')
 
     return local_gbd
 

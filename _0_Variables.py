@@ -6,7 +6,8 @@ else:
     directory = '/Volumes/Samsung_T5/Databases/'
     bca_dir = '/Volumes/ELabs/50_projects/16_PICS/07_BCA data/'
 
-radius = [1200, 1000, 800, 600, 400]
+modes = ['active', 'transit', 'drive']
+radii = [1200, 800, 400]
 r_seeds = 6
 
 ss_experiments = {
@@ -22,9 +23,8 @@ ss_experiments = {
 }
 wb_experiments = {
     'e0': 2020,
-    'e5': 2050,
-    'e6': 2050,
-    'e7': 2050
+    'e2': 2050,
+    'e3': 2050,
 }
 hq_experiments = {
     'e0': 2020,
@@ -46,16 +46,19 @@ regions = {
 
 network_layers = {
     'network_stops': ["frequency"],
-    'network_links': ["length"],
-    'network_nodes': ["elevation"], # "node_closeness", "node_betweenness", "node_n_betweenness"],
-    'network_axial': ["axial_closeness", "axial_betweenness", "axial_length",
+    'network_nodes': ["elevation"],
+    'network_axial': ["connectivity", "axial_closeness", "axial_betweenness", "axial_n_betweenness", "axial_length",
         "axial_eigenvector", "axial_katz", "axial_pagerank", "axial_hits1", "axial_degree"],
-    'network_drive': ["length"], # "link_betweenness", "link_n_betweenness"],
-    'network_cycle': ["cycle_length"],
-    'land_assessment_fabric': ["n_use", "total_finished_area"],  # "gross_building_area", "year_built", "number_of_bedrooms"],
+    'network_walk': ["walk_length", "walk_straight"],
+    'network_bike': ["bike_length", "bike_straight"],
+    'network_drive': ["drive_length", "drive_straight"],
+    'land_assessment_fabric': ["n_use", "total_finished_area", "gross_building_area", "number_of_bedrooms"],
     'land_assessment_parcels': ["area_sqkm", "n_size"],
-    'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016"], # "n_dwellings"]
+    'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016", "n_dwellings"]
 }
+
+"""
+# MACC Curve
 
 network_bus = {
     'network_stops': ["frequency"],
@@ -70,3 +73,4 @@ network_bike = {
     'land_assessment_parcels': ["area_sqkm", "n_size"],
     'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016"], # "n_dwellings"]
 }
+"""

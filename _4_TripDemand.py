@@ -9,6 +9,7 @@ from Agents import Environment, Commuter
 from geopy.distance import distance
 from matplotlib import rc
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from _0_Variables import *
 
 
 pd.set_option('display.width', 700)
@@ -18,7 +19,6 @@ name = 'Hillside Quadra'
 region = 'Capital Regional District, British Columbia'
 directory = f'/Volumes/Samsung_T5/Databases/Sandbox/{name}'
 experiments = ['e2', 'e3']# ['e0', 'e1', 'e2', 'e3']
-modes = ['walk', 'bike', 'drive', 'bus']
 em_modes = ['car', 'bus', 'total']
 exp_df = pd.DataFrame()
 macc = pd.DataFrame()

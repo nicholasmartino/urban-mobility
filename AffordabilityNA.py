@@ -1,6 +1,6 @@
 import gc
 import geopandas as gpd
-from UrbanScraper.Local import BritishColumbia
+from UrbanScraper.Local import BritishColumbia, Network
 
 
 radius = [1600, 1200, 800, 400] #4800, 3200, 1600]
@@ -21,18 +21,30 @@ network_layers = {
 }
 
 # Perform network analysis for the real place
-bc = BritishColumbia(cities=['Metro Vancouver'])
+city = Network(f"Metro Vancouver, British Columbia")
+city.centrality(run=False, axial=True, layer='network_walk')
+city.centrality(run=False, osm=True, layer='network_drive')
+city.node_elevation(run=False)
 
-for city in bc.cities:
-	city.centrality(run=False, axial=True, layer='network_walk')
-	city.centrality(run=False, osm=True, layer='network_drive')
-	city.node_elevation(run=False)
-	network_analysis = city.network_analysis(
-	    prefix='aff',
-	    run=True,
-	    service_areas=radius,
-	    sample_gdf=gpd.read_feather(f'/Volumes/Samsung_T5/Databases/Network/Metro Vancouver, British Columbia_parcels.feather'),
-	    decays=['flat', 'linear'],
-	    aggregated_layers=network_layers,
-	)
-	gc.collect()
+city.network_analysis(
+	prefix='aff_lda',
+	run=True,
+	service_areas=[1600],
+	sample_gdf=gpd.read_file(city.gpkg, layer='land_dissemination_area'),
+	decays=['flat', 'linear'],
+	aggregated_layers={
+		'craigslist_rent': ["price_sqft"],
+		'land_osm_amenities': ["amenity"],
+		'land_dissemination_area': ['walk', 'bike', 'bus', 'drive']
+	},
+)
+
+city.network_analysis(
+    prefix='aff',
+    run=False,
+    service_areas=radius,
+    sample_gdf=gpd.read_feather(f'/Volumes/Samsung_T5/Databases/Network/Metro Vancouver, British Columbia_parcels.feather'),
+    decays=['flat', 'linear'],
+    aggregated_layers=network_layers,
+)
+gc.collect()

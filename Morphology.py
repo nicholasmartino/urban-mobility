@@ -44,7 +44,7 @@ from shapely.geometry import Point, LineString, Polygon
 
 class Buildings:
     def __init__(self, gdf, group_by=None, gb_func=None, crs=26910, to_crs=None):
-        gdf = gdf.reset_index()
+        gdf = gdf.reset_index(drop=True)
 
         # Set/Adjust coordinate reference system
         if gdf.crs is None: gdf.crs = crs
@@ -202,7 +202,7 @@ class Parcels:
 class Blocks:
     def __init__(self, gdf, parcels, streets, crs=26910):
 
-        gdf = gdf.dropna().reset_index()
+        gdf = gdf.dropna().reset_index(drop=True)
         gdf.crs = crs
 
         # Trim dissolved blocks with streets
@@ -210,7 +210,7 @@ class Blocks:
             width = 2
             streets.gdf['geometry'] = streets.gdf.buffer(width)
             print(streets.gdf.sindex)
-            gdf = gpd.overlay(gdf, streets.gdf, how='difference').reset_index()
+            gdf = gpd.overlay(gdf, streets.gdf, how='difference').reset_index(drop=True)
 
         # Create block id and join to buildings and parcels
         gdf['id'] = gdf.index
@@ -237,9 +237,9 @@ class Blocks:
 
 
 class Streets:
-    def __init__(self, gdf, buildings, crs=26910, widths=None, trees=None):
+    def __init__(self, gdf, crs=26910, buildings=None, widths=None, trees=None):
         self.gdf = gdf.to_crs(crs)
-        self.barriers = buildings.gdf
+        if buildings is not None: self.barriers = buildings.gdf
         self.trees = trees
         self.widths = widths
         self.crs = crs
@@ -247,7 +247,7 @@ class Streets:
         return
 
     def dimension(self):
-        gdf = self.gdf.copy().reset_index()
+        gdf = self.gdf.copy().reset_index(drop=True)
 
         print("> Cleaning street widths")
         if self.widths is not None:
@@ -281,20 +281,20 @@ class Streets:
             widths['geometry'] = widths.buffer(10)
 
             gdf['id'] = gdf.index
-            joined = gpd.sjoin(gdf, widths, how='left')
-            joined['width'] = pd.to_numeric(joined['width'])
-            joined = joined.groupby('id', as_index=False).mean()
-            joined = pd.merge(gdf, joined, on='id', copy=False)
-            joined['geometry'] = list(gdf.loc[gdf['id'].isin(joined['id'])]['geometry'])
+            gdf = gpd.sjoin(gdf, widths, how='left')
+            gdf['width'] = pd.to_numeric(gdf['width'])
+            gdf = gdf.groupby('id', as_index=False).mean()
+            gdf = pd.merge(gdf, gdf, on='id', copy=False)
+            gdf['geometry'] = list(gdf.loc[gdf['id'].isin(gdf['id'])]['geometry'])
 
             # Replace NaN values
-            print(f'Width information from {joined["width"].isna().sum()} features could not be joined')
-            for use in joined['streetuse'].unique():
-                joined.loc[(joined['streetuse'] == use) & (joined['width'].isna()), 'width'] = joined[joined['streetuse'] == use]['width'].mean()
+            print(f'Width information from {gdf["width"].isna().sum()} features could not be joined')
+            for use in gdf['streetuse'].unique():
+                gdf.loc[(gdf['streetuse'] == use) & (gdf['width'].isna()), 'width'] = gdf[gdf['streetuse'] == use]['width'].mean()
         else: print('Widths layer not found!')
 
-        joined['length'] = [geom.length for geom in joined['geometry']]
-        return joined
+        gdf['length'] = [geom.length for geom in gdf['geometry']]
+        return gdf
 
     def direction(self):
         gdf = self.gdf.copy()
@@ -325,7 +325,7 @@ class Streets:
         return gdf
 
     def connectivity(self):
-        gdf = self.gdf.copy().reset_index()
+        gdf = self.gdf.copy().reset_index(drop=True)
         gdf['id'] = gdf.index
         buffer = gpd.GeoDataFrame(gdf.buffer(1), columns=['geometry'], crs=26910)
         buffer.to_file(f'{directory}/street_segs_buffer.geojson', drive='GeoJSON')
@@ -375,9 +375,9 @@ class Streets:
 
     def all(self):
         print("> Calculating all indicators for Streets")
-        # self.gdf = self.dimension()
-        # self.gdf = self.direction()
-        # self.gdf = self.connectivity()
+        self.gdf = self.dimension()
+        self.gdf = self.direction()
+        self.gdf = self.connectivity()
 
         try:
             iso_gdf = gpd.read_file(f'{directory}/isovists.geojson').loc[:, ['iso_area', 'iso_perim']]

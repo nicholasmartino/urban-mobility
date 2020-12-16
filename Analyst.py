@@ -55,6 +55,7 @@ from shapely.affinity import translate, scale
 from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
+from Morphology import Streets
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 from sklearn.cluster import DBSCAN, KMeans, AffinityPropagation
 
@@ -222,15 +223,19 @@ class Network:
 
                 return nodes, edges
 
-            network = ox.graph_from_place(self.municipality, network_type='all')
-            nodes, edges = save_and_open(network, 'network')
+            for net_type in ['all', 'walk', 'bike', 'drive']:
+                graph = ox.graph_from_place(self.municipality, network_type=net_type)
+                nodes, edges = save_and_open(graph, f'network_{net_type}')
 
-            walk = ox.graph_from_place(self.municipality, network_type='walk')
-            w_nodes, w_edges = save_and_open(walk, 'network_walk')
-            cycleway = ox.graph_from_place(self.municipality, network_type='bike')
-            c_nodes, c_edges = save_and_open(cycleway, 'network_cycle')
-            drive = ox.graph_from_place(self.municipality, network_type='drive')
-            d_nodes, d_edges = save_and_open(drive, 'network_drive')
+                # Get street indicators
+                d_str = Streets(edges)
+                d_str.gdf = d_str.dimension()
+                edges = d_str.direction()
+                edges[f'{net_type}_length'] = edges['length'].astype(int)
+                edges[f'{net_type}_straight'] = edges['straight']
+
+                edges.to_file(self.gpkg, layer=f'network_{net_type}')
+                nodes.to_file(self.gpkg, layer=f'network_{net_type}_nodes')
 
             # # Simplify links
             # s_tol = 15
@@ -265,11 +270,6 @@ class Network:
             # cycling_net.loc[:, 'cycle_length'] = cycling_net.geometry.length
             # driving_net = filter_highway(driving)
 
-            w_edges.to_file(self.gpkg, layer='network_walk')
-            c_edges.to_file(self.gpkg, layer='network_cycle')
-            d_edges.to_file(self.gpkg, layer='network_drive')
-            nodes.to_file(self.gpkg, layer='network_nodes')
-
             # sbb = False
             # if sbb:
             #     # Buffer endpoints and get centroid
@@ -289,7 +289,7 @@ class Network:
             #     w_edges['geometry'] = lns
             #
             # w_edges.to_file(self.gpkg, layer='network_links_simplified')
-            print("Street network from OpenStreetMap updated")
+            print("Street network from OpenStreetMap updated\n")
 
     def merge_csv(self, path):
         os.chdir(path)
