@@ -55,7 +55,7 @@ from shapely.affinity import translate, scale
 from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
-from Morphology import Streets
+from Morphology.Urban import Streets
 from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
 from sklearn.cluster import DBSCAN, KMeans, AffinityPropagation
 
