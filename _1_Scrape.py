@@ -1,6 +1,6 @@
 from UrbanScraper.Scraper import Canada
 from UrbanScraper.Local import BritishColumbia
-from _0_Variables import *
+from SB0_Variables import *
 
 
 # Download and transfer data

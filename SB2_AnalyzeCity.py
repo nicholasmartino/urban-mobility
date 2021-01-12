@@ -3,7 +3,7 @@ import gc
 import geopandas as gpd
 from UrbanScraper.Local import BritishColumbia
 from UrbanScraper.Scraper import Canada
-from _0_Variables import *
+from SB0_Variables import *
 
 
 # Perform network analysis for the real place

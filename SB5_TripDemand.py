@@ -9,7 +9,7 @@ from Agents import Environment, Commuter
 from geopy.distance import distance
 from matplotlib import rc
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from _0_Variables import *
+from SB0_Variables import *
 
 
 pd.set_option('display.width', 700)

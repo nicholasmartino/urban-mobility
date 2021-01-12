@@ -6,25 +6,26 @@ else:
     directory = '/Volumes/Samsung_T5/Databases/'
     bca_dir = '/Volumes/ELabs/50_projects/16_PICS/07_BCA data/'
 
-modes = ['active', 'transit', 'drive']
+modes = ['walk', 'bike', 'drive', 'transit']
 radii = [1200, 800, 400]
 r_seeds = 6
 
 ss_experiments = {
     'e0': 2020,
-    'e1': 2030,
-    'e2': 2030,
-    'e3': 2030,
-    'e4': 2040,
+    # 'e1': 2030,
+    # 'e2': 2030,
+    'e3': 2040,
+    # 'e4': 2040,
     'e5': 2040,
     'e6': 2040,
-    'e7': 2050,
-    'e8': 2050
+    # 'e7': 2050,
+    # 'e8': 2050
 }
 wb_experiments = {
     'e0': 2020,
-    'e2': 2050,
-    'e3': 2050,
+    'e5': 2050,
+    'e6': 2050,
+    'e7': 2050,
 }
 hq_experiments = {
     'e0': 2020,
@@ -47,8 +48,8 @@ regions = {
 network_layers = {
     'network_stops': ["frequency"],
     'network_nodes': ["elevation"],
-    'network_axial': ["connectivity", "axial_closeness", "axial_betweenness", "axial_n_betweenness", "axial_length",
-        "axial_eigenvector", "axial_katz", "axial_pagerank", "axial_hits1", "axial_degree"],
+    # 'network_axial': ["connectivity", "axial_closeness", "axial_betweenness", "axial_n_betweenness", "axial_length",
+    #     "axial_eigenvector", "axial_katz", "axial_pagerank", "axial_hits1", "axial_degree"],
     'network_walk': ["walk_length", "walk_straight"],
     'network_bike': ["bike_length", "bike_straight"],
     'network_drive': ["drive_length", "drive_straight"],

@@ -2,111 +2,120 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from shapely.geometry import Point
-from Morphology import Streets
+from Morphology.Urban import Streets
 from skbio import diversity
 
+print("\n> Performing simple union for district-wide layers")
 
-def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
+
+def overlay_radius(sample_gpkg, boundary_gpkg, sample_layer, boundary_layer='land_municipal_boundary', crs=26910, max_na_radius=4800):
+    loc_bdr = gpd.read_file(boundary_gpkg, layer=boundary_layer)
+    loc_bdr = loc_bdr.to_crs(boundary_gpkg.crs)
+    loc_bdr_b = gpd.GeoDataFrame(geometry=loc_bdr.buffer(max_na_radius))
+
+    gdf = gpd.read_file(sample_gpkg, layer=sample_layer)
+    try:
+        gdf.to_crs(crs)
+    except:
+        gdf.crs = crs
+
+    ovr = gpd.overlay(gdf, loc_bdr_b)
+    ovr.to_file(sample_gpkg, layer=sample_layer)
+    return ovr
+
+
+def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=True, morphology=True):
 
     exp = list(experiment.keys())[0]
     yr = list(experiment.values())[0]
 
-    loc_bdr = gpd.read_file(local_gbd.gpkg, layer='land_municipal_boundary')
-    loc_bdr = loc_bdr.to_crs(local_gbd.crs)
-    loc_bdr_b = gpd.GeoDataFrame(geometry=loc_bdr.buffer(max_na_radius))
+    if parcels:
+        print("> Joining attributes from buildings to parcels")
+        buildings = gpd.read_file(local_gbd.gpkg, layer=f'fabric_buildings_{exp}')
+        parcels2 = gpd.read_file(local_gbd.gpkg, layer=f'land_parcels_{exp}')
+        parcels2['OBJECTID'] = [i for i in range(len(parcels2))]
 
-    print("\n> Performing simple union for district-wide layers")
-    def rd_repr_ovr_exp(left_gpkg, right_gpkg, layer, crs):
-        gdf = gpd.read_file(left_gpkg, layer=layer)
-        try: gdf.to_crs(crs)
-        except: gdf.crs = crs
-        ovr = gpd.overlay(gdf, loc_bdr_b)
-        ovr.to_file(right_gpkg, layer=layer)
-    for lyr in ['network_nodes', 'network_axial', 'network_drive', 'network_stops']:
-        rd_repr_ovr_exp(district_gbd.gpkg, local_gbd.gpkg, layer=lyr, crs=local_gbd.crs)
+        # Rename land use standards
+        parcels2 = parcels2.replace({'RS_SF_A': 'SFA', 'RS_MF_L': 'MFL', 'RS_MF_H': 'MFH', 'RS_SF_D': 'SFD'})
 
-    print("> Joining attributes from buildings to parcels")
-    buildings = gpd.read_file(local_gbd.gpkg, layer=f'fabric_buildings_{exp}')
-    parcels2 = gpd.read_file(local_gbd.gpkg, layer=f'land_parcels_{exp}')
-    parcels2['OBJECTID'] = [i for i in range(len(parcels2))]
+        if 'OBJECTID' not in parcels2.columns:
+            print("!!! OBJECTID column not found on parcels !!!")
 
-    # Rename land use standards
-    parcels2 = parcels2.replace({'RS_SF_A': 'SFA', 'RS_MF_L': 'MFL', 'RS_MF_H': 'MFH', 'RS_SF_D': 'SFD'})
+        # Join data from buildings to parcels
+        pcl_bdg_raw = gpd.sjoin(parcels2, buildings, how='left', lsuffix="pcl", rsuffix="bdg")
+        col2try = ["OBJECTID_pcl", "OBJECTID"]
+        pcl_bdg = None
+        while True:
+            for col in col2try:
+                try:
+                    pcl_bdg = pcl_bdg_raw.groupby(col)
+                    break
+                except: pass
+            break
 
-    if 'OBJECTID' not in parcels2.columns:
-        print("!!! OBJECTID column not found on parcels !!!")
+        if pcl_bdg is None:
+            print("!!! Grouped by parcel not defined !!!")
 
-    # Join data from buildings to parcels
-    pcl_bdg_raw = gpd.sjoin(parcels2, buildings, how='left', lsuffix="pcl", rsuffix="bdg")
-    col2try = ["OBJECTID_pcl", "OBJECTID"]
-    pcl_bdg = None
-    while True:
-        for col in col2try:
-            try:
-                pcl_bdg = pcl_bdg_raw.groupby(col)
-                break
-            except: pass
-        break
+        parcels2['area'] = parcels2['geometry'].area
+        parcels2["area_sqkm"] = parcels2['area'] / 1000000
+        try:
+            res_count_col = 'res_count'
+            parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+        except:
+            res_count_col = 'res_count_bdg'
+            parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+        print(f"{exp} experiment with {parcels2['population, 2016'].sum()} people")
+        parcels2.to_file(local_gbd.gpkg, layer=f"land_parcels_{exp}", driver='GPKG')
 
-    if pcl_bdg is None:
-        print("!!! Grouped by parcel not defined !!!")
+        print("> Adapting parcels to dissemination area")
+        dss_are = parcels2
+        try: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+        except: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
+        dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['area']
 
-    parcels2['area'] = parcels2['geometry'].area
-    parcels2["area_sqkm"] = parcels2['area'] / 1000000
-    try:
-        res_count_col = 'res_count'
-        parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
-    except:
-        res_count_col = 'res_count_bdg'
-        parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
-    print(f"{exp} experiment with {parcels2['population, 2016'].sum()} people")
-    parcels2.to_file(local_gbd.gpkg, layer=f"land_parcels_{exp}", driver='GPKG')
+        n_dwell = ['n_res_unit', 'res_units_bdg', 'n_res_unit_bdg', 'res_units']
+        for col in n_dwell:
+            if col in pcl_bdg_raw.columns:
+                dss_are["n_dwellings"] = pcl_bdg.sum()[col].values
 
-    print("> Adapting parcels to dissemination area")
-    dss_are = parcels2
-    try: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
-    except: dss_are["population, 2016"] = pcl_bdg.sum()[res_count_col].values
-    dss_are["population density per square kilometre, 2016"] = pcl_bdg.sum()[res_count_col].values / parcels2['area']
+        print("> Adapting parcels to assessment fabric")
+        ass_fab = parcels2
 
-    n_dwell = ['n_res_unit', 'res_units_bdg', 'n_res_unit_bdg']
-    for col in n_dwell:
-        if col in pcl_bdg_raw.columns:
-            dss_are["n_dwellings"] = pcl_bdg.sum()[col].values
+        ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
+        ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
+        ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
+        ass_fab.loc[(parcels2['area'] > 800) & (parcels2['area'] < 1600), 'n_size'] = '800 to 1600'
+        ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
+        ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
+        ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
 
-    print("> Adapting parcels to assessment fabric")
-    ass_fab = parcels2
+        land_use = ['LANDUSE', 'Landuse_pcl', 'LANDUSE_pcl']
+        for col in land_use:
+            if col in pcl_bdg_raw.columns:
+                ass_fab["n_use"] = [u[0] for u in pcl_bdg[col].unique()]
 
-    ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
-    ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
-    ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
-    ass_fab.loc[(parcels2['area'] > 800) & (parcels2['area'] < 1600), 'n_size'] = '800 to 1600'
-    ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
-    ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
-    ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
+        floor_area = ['floor_area', 'floor_area_bdg']
+        for col in floor_area:
+            if col in pcl_bdg_raw.columns:
+                ass_fab["total_finished_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
 
-    land_use = ['LANDUSE', 'Landuse_pcl', 'LANDUSE_pcl']
-    for col in land_use:
-        if col in pcl_bdg_raw.columns:
-            ass_fab["n_use"] = [u[0] for u in pcl_bdg[col].unique()]
+        # Get floor area from FAR if specific field does not exist
+        if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
+            ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
 
-    floor_area = ['floor_area', 'floor_area_bdg']
-    for col in floor_area:
-        if col in pcl_bdg_raw.columns:
-            ass_fab["total_finished_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+        ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
+        for col in ftprt_area:
+            if col in pcl_bdg_raw.columns:
+                ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
 
-    # Get floor area from FAR if specific field does not exist
-    if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
-        ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
+        n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
+        for col in n_bed:
+            if col in pcl_bdg_raw.columns:
+                ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[col].values
 
-    ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
-    for col in ftprt_area:
-        if col in pcl_bdg_raw.columns:
-            ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
-
-    n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
-    for col in n_bed:
-        if col in pcl_bdg_raw.columns:
-            ass_fab["number_of_bedrooms"] = pcl_bdg.sum()[col].values
+        ass_fab.to_file(local_gbd.gpkg, layer='land_assessment_fabric', encoding='ISO-8859-1')
+        parcels2.to_file(local_gbd.gpkg, layer='land_assessment_parcels', encoding='ISO-8859-1')
+        dss_are.to_file(local_gbd.gpkg, layer='land_dissemination_area', encoding='ISO-8859-1')
 
     # print("> Calculating diversity indices")
 
@@ -129,49 +138,67 @@ def proxy_indicators(local_gbd, district_gbd, experiment, max_na_radius=4800):
     # dss_are["dwelling_div_rooms_sh"] = [diversity.alpha_diversity("shannon", df_ddr)[0] for i in range(len(dss_are))]
 
     init_streets = gpd.read_file(local_gbd.gpkg, layer='network_walk')
-    streets = init_streets
-    streets["length"] = streets.geometry.length
-    cycling = streets[streets[f"cycle_{yr}"] == 1]
-    cycling['length'] = cycling.geometry.length
 
-    print("> Joining transit frequency data")
-    stops = gpd.GeoDataFrame({
-        'geometry': [Point(geom.coords[0]) for geom in streets.geometry]
-    }, geometry='geometry')
-    stops = stops.drop_duplicates(subset=['geometry']).reset_index(drop=True)
-    bus2020 = streets[streets['bus_2020'] == 1].geometry.buffer(5).unary_union
-    freqt2040 = streets[streets['freqt_2040'] == 1].geometry.buffer(5).unary_union
-    rapid2040 = streets[streets['rapid_2040'] == 1].geometry.buffer(5).unary_union
-    for i in list(stops.index):
-        if stops.iloc[i]['geometry'].within(bus2020):
-            stops.at[i, 'frequency'] = 32  # 1.3 trips per hour
-            stops.at[i, 'frequency_2020'] = 32  # 1.3 trips per hour
-            stops.at[i, 'frequency_2040'] = 32  # 1.3 trips per hour
-        if stops.iloc[i]['geometry'].within(rapid2040) & yr >= 2040:
-            stops.at[i, 'frequency'] = 48 # 2 trips per hour
-            stops.at[i, 'frequency_2040'] = 48 # 2 trips per hour
-        if stops.iloc[i]['geometry'].within(freqt2040) & yr >= 2040:
-            stops.at[i, 'frequency'] = 192 # 8 trips per hour
-            stops.at[i, 'frequency_2040'] = 192 # 8 trips per hour
-    stops = stops.fillna(0)
-    stops = stops[stops['frequency'] > 0]
+    if cycling:
+        streets = init_streets
+        streets["length"] = streets.geometry.length
+        cycling = streets[streets[f"cycle_{yr}"] == 1]
+        cycling['length'] = cycling.geometry.length
 
-    if len(streets) < len(init_streets):
-        print("!!! Streets line count smaller than initial !!!")
+        if len(streets) < len(init_streets):
+            print("!!! Streets line count smaller than initial !!!")
+
+    if transit:
+        print("> Joining transit frequency data")
+        stops = gpd.GeoDataFrame({
+            'geometry': [Point(geom.coords[0]) for geom in streets.geometry]
+        }, geometry='geometry')
+        stops = stops.drop_duplicates(subset=['geometry']).reset_index(drop=True)
+
+        bus2020 = streets[streets['bus_2020'] == 1].geometry.buffer(5).unary_union
+        freqt2020 = streets[streets['freqt_2020'] == 1].geometry.buffer(5).unary_union
+        freqt2040 = streets[streets[f'freqt_{yr}'] == 1].geometry.buffer(5).unary_union
+        rapid2020 = streets[streets['rapid_2020'] == 1].geometry.buffer(5).unary_union
+        rapid2040 = streets[streets[f'rapid_{yr}'] == 1].geometry.buffer(5).unary_union
+
+        frequencies = {'freqt': 192, 'rapid': 96, 'bus': 48}
+
+        for i in list(stops.index):
+
+            if stops.iloc[i]['geometry'].within(bus2020):
+                stops.at[i, 'frequency'] = frequencies['bus']
+                stops.at[i, 'frequency_2040'] = frequencies['bus']
+
+            if stops.iloc[i]['geometry'].within(freqt2020):
+                stops.at[i, 'frequency'] = frequencies['freqt']
+                stops.at[i, 'frequency_2040'] = frequencies['freqt']
+
+            if stops.iloc[i]['geometry'].within(rapid2020):
+                stops.at[i, 'frequency'] = frequencies['rapid']
+                stops.at[i, 'frequency_2040'] = frequencies['rapid']
+
+            if stops.iloc[i]['geometry'].within(rapid2040) & (yr >= 2040):
+                stops.at[i, 'frequency'] = frequencies['rapid']
+                stops.at[i, 'frequency_2040'] = frequencies['rapid']
+
+            if stops.iloc[i]['geometry'].within(freqt2040) & (yr >= 2040):
+                stops.at[i, 'frequency'] = frequencies['freqt']
+                stops.at[i, 'frequency_2040'] = frequencies['freqt']
+
+        stops = stops.fillna(0)
+        stops = stops[(stops['frequency'] > 0) | (stops['frequency_2040'] > 0)]
+        stops.to_file(local_gbd.gpkg, layer=f'network_stops', encoding='ISO-8859-1')
 
     # Get morphological indicators
-    for name, gdf in {'walk': streets, 'drive': streets, 'bike': cycling}.items():
-        streets = Streets(gdf)
-        streets.gdf = streets.dimension()
-        streets.gdf = streets.direction()
-        streets.gdf[f'{name}_length'] = streets.gdf['length'].astype(int)
-        streets.gdf[f'{name}_straight'] = streets.gdf['straight']
-        streets.gdf.to_file(local_gbd.gpkg, layer=f'network_{name}', encoding='ISO-8859-1')
+    if morphology:
+        for name, gdf in {'walk': streets, 'drive': streets, 'bike': cycling}.items():
+            streets = Streets(gdf)
+            streets.gdf = streets.dimension()
+            streets.gdf = streets.direction()
+            streets.gdf[f'{name}_length'] = streets.gdf['length'].astype(int)
+            streets.gdf[f'{name}_straight'] = streets.gdf['straight']
+            streets.gdf.to_file(local_gbd.gpkg, layer=f'network_{name}', encoding='ISO-8859-1')
 
-    stops.to_file(local_gbd.gpkg, layer='network_stops', encoding='ISO-8859-1')
-    ass_fab.to_file(local_gbd.gpkg, layer='land_assessment_fabric', encoding='ISO-8859-1')
-    parcels2.to_file(local_gbd.gpkg, layer='land_assessment_parcels', encoding='ISO-8859-1')
-    dss_are.to_file(local_gbd.gpkg, layer='land_dissemination_area', encoding='ISO-8859-1')
     return local_gbd
 
 def proxy_network(local_gbd, run=True):
