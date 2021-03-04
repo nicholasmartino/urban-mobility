@@ -23,13 +23,11 @@ SOFTWARE.
 """
 
 import ast
-import os
 import gc
 import glob
 import timeit
 from shutil import copyfile
 
-from tqdm import tqdm
 import geopandas as gpd
 import osmnx as ox
 import pandana as pdna
@@ -43,6 +41,9 @@ import statsmodels.api as sm
 from PIL import Image
 from Statistics.basic_stats import shannon_div
 from fiona import listlayers
+from tqdm import tqdm
+
+import os
 try: from graph_tool.all import *
 except: pass
 from matplotlib.colors import ListedColormap
@@ -55,10 +56,8 @@ from shapely.affinity import translate, scale
 from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
-from Morphology.Urban import Streets
-from sqlalchemy import create_engine
-from sklearn.mixture import GaussianMixture, BayesianGaussianMixture
-from sklearn.cluster import DBSCAN, KMeans, AffinityPropagation
+from Morphology.Streets import Streets
+from sklearn.cluster import KMeans
 from Morphology.Shape import relative_max_min
 
 
@@ -331,7 +330,9 @@ class Network:
 		if run:
 			start_time = timeit.default_timer()
 
-			nodes_gdf = gpd.read_file(self.gpkg, layer='network_nodes')
+			try: nodes_gdf = gpd.read_file(self.gpkg, layer='network_nodes')
+			except: nodes_gdf = gpd.read_file(self.gpkg, layer='network_intersections')
+
 			nodes_gdf.crs = self.crs
 			nodes_gdf_4326 = nodes_gdf.to_crs(epsg=4326)
 
@@ -819,6 +820,9 @@ class Network:
 			edges["from"] = edges["from"].astype(int64)
 			edges["to"] = edges["to"].astype(int64)
 
+			# Create length field if it doesn't have
+			if "length" not in edges.columns: edges["length"] = edges.length
+
 			# Read and reproject network GeoDataFrames
 			nodes = nodes.to_crs(epsg=self.crs)
 			edges = edges.to_crs(epsg=self.crs)
@@ -953,6 +957,9 @@ class Network:
 			sample_gdf = sample_gdf.loc[:, list(set(sample_gdf.columns))]
 
 			if export:
+				if not os.path.exists(f'{self.directory}/Network'):
+					os.mkdir(f'{self.directory}/Network')
+
 				try:
 					sample_gdf.to_feather(f'{self.directory}/Network/{self.municipality}_{file_prefix}_na.feather')
 				except:

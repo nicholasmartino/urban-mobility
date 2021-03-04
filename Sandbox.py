@@ -1,8 +1,9 @@
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
-from Morphology.Urban import Streets
+from tqdm import tqdm
+from shapely.geometry import Point, LineString
+from Morphology.Streets import Streets
 from skbio import diversity
 
 print("\n> Performing simple union for district-wide layers")
@@ -23,6 +24,52 @@ def overlay_radius(sample_gpkg, boundary_gpkg, sample_layer, boundary_layer='lan
     ovr.to_file(sample_gpkg, layer=sample_layer)
     return ovr
 
+def proxy_network(local_gbd, run=True):
+    """
+    Creates to and from fields on line segments in order to perform network analysis
+    :param local_gbd: class GeoBoundary
+    :param run: boolean toggle to run function
+    """
+
+    if run:
+        print("> Updating street network connectivity")
+        streets_initial = gpd.read_file(local_gbd.gpkg, layer='network_links')
+        streets = streets_initial.reset_index(drop=True)
+
+        nodes = gpd.GeoDataFrame(columns=['geometry'])
+        for i, mg in enumerate(streets.geometry):
+            if mg.__class__.__name__ == 'LineString': mg=[mg]
+            for ln in mg:
+                ni = i * 2
+                uid = lambda t: int("".join([str(o).replace('.', '') for o in list(t)]))
+                nodes.at[ni, 'osmid'] = uid(ln.coords[0])
+                nodes.at[ni, 'geometry'] = Point(ln.coords[0])
+                nodes.at[ni + 1, 'osmid'] = uid(ln.coords[1])
+                nodes.at[ni + 1, 'geometry'] = Point(ln.coords[1])
+                streets.at[i, 'osmid'] = int(i)
+                streets.at[i, 'from'] = uid(ln.coords[0])
+                streets.at[i, 'to'] = uid(ln.coords[1])
+                streets.at[i, 'geometry'] = ln
+
+        nodes = nodes.drop_duplicates(subset='osmid', ignore_index=True)
+        old_ids = nodes.osmid.unique()
+        new_ids = [i for i in range(len(old_ids))]
+        nodes = nodes.replace(old_ids, new_ids)
+        streets = streets.replace(old_ids, new_ids)
+
+        nodes.crs = local_gbd.crs
+        streets.crs = local_gbd.crs
+
+        if len(streets_initial) < len(streets):
+            print("!!! Streets line count smaller than initial !!!")
+
+        nodes.to_file(local_gbd.gpkg, layer='network_intersections')
+        streets.to_file(local_gbd.gpkg, layer='network_links')
+        streets.to_file(local_gbd.gpkg, layer='network_walk')
+        streets.to_file(local_gbd.gpkg, layer='network_drive')
+        streets.to_file(local_gbd.gpkg, layer='network_all')
+
+    return local_gbd
 
 def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=True, morphology=True):
 
@@ -138,9 +185,14 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
     # dss_are["dwelling_div_rooms_sh"] = [diversity.alpha_diversity("shannon", df_ddr)[0] for i in range(len(dss_are))]
 
     init_streets = gpd.read_file(local_gbd.gpkg, layer='network_walk')
+    streets = init_streets
 
     if cycling:
-        streets = init_streets
+        cycling_cols = [f'cycle_{yr}', 'BikeLane']
+        for col in cycling_cols:
+            if col in streets.columns:
+                streets[f"cycle_{yr}"] = streets[col]
+
         streets["length"] = streets.geometry.length
         cycling = streets[streets[f"cycle_{yr}"] == 1]
         cycling['length'] = cycling.geometry.length
@@ -154,6 +206,16 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
             'geometry': [Point(geom.coords[0]) for geom in streets.geometry]
         }, geometry='geometry')
         stops = stops.drop_duplicates(subset=['geometry']).reset_index(drop=True)
+
+        if 'bus_2020' not in streets.columns:
+            streets['bus_2020'] = np.nan
+
+        if 'freqt_2020' not in streets.columns:
+            streets['freqt_2020'] = np.nan
+
+        if 'rapid_2020' not in streets.columns:
+            try: streets['rapid_2020'] = streets['Transit']
+            except: streets['rapid_2020'] = np.nan
 
         bus2020 = streets[streets['bus_2020'] == 1].geometry.buffer(5).unary_union
         freqt2020 = streets[streets['freqt_2020'] == 1].geometry.buffer(5).unary_union
@@ -201,112 +263,64 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
 
     return local_gbd
 
-def proxy_network(local_gbd, run=True):
-    """
-    Creates to and from fields on line segments in order to perform network analysis
-    :param local_gbd: class GeoBoundary
-    :param run: boolean toggle to run function
-    """
+def estimate_demand(origin_gdf, destination_gdf):
+    # Load potential destinations
+    print("> Estimating travel demand")
+    crd_gdf = destination_gdf.copy()
+    gdf = origin_gdf.copy()
+    d_gdf = crd_gdf[(crd_gdf['n_use'] == 'MX') | (crd_gdf['n_use'] == 'CM')]
+    d_gdf = d_gdf.reset_index()
 
-    if run:
-        print("> Updating street network connectivity")
-        streets_initial = gpd.read_file(local_gbd.gpkg, layer='network_links')
-        streets = streets_initial.reset_index(drop=True)
+    # Make blocks GeoDataFrame
+    blocks = gpd.GeoDataFrame({'geometry': [geom for geom in gdf.buffer(1).unary_union]})
 
-        nodes = gpd.GeoDataFrame(columns=['geometry'])
-        for i, mg in enumerate(streets.geometry):
-            if mg.__class__.__name__ == 'LineString': mg=[mg]
-            for ln in mg:
-                ni = i * 2
-                uid = lambda t: int("".join([str(o).replace('.', '') for o in list(t)]))
-                nodes.at[ni, 'osmid'] = uid(ln.coords[0])
-                nodes.at[ni, 'geometry'] = Point(ln.coords[0])
-                nodes.at[ni + 1, 'osmid'] = uid(ln.coords[1])
-                nodes.at[ni + 1, 'geometry'] = Point(ln.coords[1])
-                streets.at[i, 'osmid'] = int(i)
-                streets.at[i, 'from'] = uid(ln.coords[0])
-                streets.at[i, 'to'] = uid(ln.coords[1])
-                streets.at[i, 'geometry'] = ln
+    # Draw a line from each parcel to all destinations
+    for p in list(blocks.index):
+        ls = []
+        for r in tqdm(list(d_gdf.index)):
+            ls.append(LineString([gdf.iloc[p]['geometry'].centroid.coords[0],
+                                  d_gdf.iloc[r]['geometry'].centroid.coords[0]]).length)
+        blocks.at[p, 'demand'] = (sum(ls)/len(ls))/1000
+    return blocks
 
-        nodes = nodes.drop_duplicates(subset='osmid', ignore_index=True)
-        old_ids = nodes.osmid.unique()
-        new_ids = [i for i in range(len(old_ids))]
-        nodes = nodes.replace(old_ids, new_ids)
-        streets = streets.replace(old_ids, new_ids)
-
-        nodes.crs = local_gbd.crs
-        streets.crs = local_gbd.crs
-
-        if len(streets_initial) < len(streets):
-            print("!!! Streets line count smaller than initial !!!")
-
-        nodes.to_file(local_gbd.gpkg, layer='network_intersections')
-        streets.to_file(local_gbd.gpkg, layer='network_walk')
-        streets.to_file(local_gbd.gpkg, layer='network_drive')
-        streets.to_file(local_gbd.gpkg, layer='network_all')
-
-    return local_gbd
-
-def estimate_emissions(gdf, title='', directory='/Volumes/Samsung_T5/Databases'):
+def calculate_emissions(parcel_gdf, block_gdf, suffix='', directory='/Volumes/Samsung_T5/Databases'):
     # Iterate over each parcel to define the probability of dwellers to chose each mode
     agents = pd.DataFrame()
+    gdf = parcel_gdf.copy()
     for i in list(gdf.index):
         if gdf.loc[i, 'population, 2016'] > 0:
             for j in range(int(gdf.loc[i, 'population, 2016'])):
                 k = len(agents)
                 agents.at[k, 'parcel'] = i
-                agents.at[k, 'p_walk'] = gdf.loc[i, f'walk_{title}_n']
-                agents.at[k, 'p_bike'] = gdf.loc[i, f'bike_{title}_n']
-                agents.at[k, 'p_bus'] = gdf.loc[i, f'bus_{title}_n']
-                agents.at[k, 'p_drive'] = gdf.loc[i, f'drive_{title}_n']
+                agents.at[k, 'p_walk'] = gdf.loc[i, f'walk{suffix}']
+                agents.at[k, 'p_bike'] = gdf.loc[i, f'bike{suffix}']
+                agents.at[k, 'p_transit'] = gdf.loc[i, f'transit{suffix}']
+                agents.at[k, 'p_drive'] = 1 - sum(gdf.loc[i, [f'walk{suffix}', f'bike{suffix}', f'transit{suffix}']])
 
     # Randomly chose the mode of each agent based on the probabilities
     print("> Assigning mode to each inhabitant")
     for k in list(agents.index):
         agents.at[k, 'mode'] = np.random.choice(
-            ['walk', 'bike', 'bus', 'drive'], 1, p=list(agents.loc[k, ['p_walk', 'p_bike', 'p_bus', 'p_drive']]))[0]
+            ['walk', 'bike', 'transit', 'drive'], 1, p=list(agents.loc[k, ['p_walk', 'p_bike', 'p_transit', 'p_drive']]))[0]
 
     # Get number of people by mode choice by parcel
     for p in list(gdf.index):
         gdf.at[p, 'walkers'] = len(agents[(agents['mode'] == 'walk') & (agents['parcel'] == p)])
         gdf.at[p, 'bikers'] = len(agents[(agents['mode'] == 'bike') & (agents['parcel'] == p)])
-        gdf.at[p, 'riders'] = len(agents[(agents['mode'] == 'bus') & (agents['parcel'] == p)])
+        gdf.at[p, 'riders'] = len(agents[(agents['mode'] == 'transit') & (agents['parcel'] == p)])
         gdf.at[p, 'drivers'] = len(agents[(agents['mode'] == 'drive') & (agents['parcel'] == p)])
 
-    # Load potential destinations
-    print("> Estimating travel demand")
-    crd_gdf = gpd.read_file(
-        f'{directory}/Capital Regional District, British Columbia.gpkg', layer='land_assessment_fabric')
-    d_gdf = crd_gdf[
-        (crd_gdf['n_use'] == 'retail') | (crd_gdf['n_use'] == 'office') | (crd_gdf['n_use'] == 'hospitality') |
-        (crd_gdf['n_use'] == 'civic') | (crd_gdf['n_use'] == 'entertainment')]
-    d_gdf = d_gdf.reset_index()
-
-    # # Draw a line from each parcel to all destinations
-    # for p in list(gdf.index):
-    #     gdf.iloc[p]['geometry'].centroid.coords[0]
-    #     ls = []
-    #     for r in list(d_gdf.index):
-    #         ls.append(LineString([gdf.iloc[p]['geometry'].centroid.coords[0],
-    #                               d_gdf.iloc[r]['geometry'].centroid.coords[0]]).length)
-    #         print(f"> Appended destination {r}/{len(d_gdf)-1} for {p}/{len(gdf)-1} proxy parcels")
-    #     gdf.at[p, 'demand'] = (sum(ls)/len(ls))/1000
-    gdf['demand'] = 5
+    # Join trip demand from blocks to parcels
+    gdf = gpd.overlay(gdf, block_gdf)
 
     # Estimate emissions for riders and drivers
     print("> Calculating potential emissions")
-    bus_em = 70
+    transit_em = 70
     drive_em = 120
-    gdf['bus_em'] = bus_em * gdf['demand'] * gdf['riders']
-    gdf['drive_em'] = drive_em * gdf['demand'] * gdf['drivers']
-    gdf['total_em_kg_trip'] = (gdf['bus_em'] + gdf['drive_em'])/1000
-    gdf['total_em_kg_yr'] = gdf['total_em_kg_trip'] * 2 * 200
-    gdf['total_em_kg_yr_person'] = gdf['total_em_kg_yr']/gdf['population, 2016']
+    gdf[f'transit_em{suffix}'] = transit_em * gdf['demand'] * gdf['riders']
+    gdf[f'drive_em{suffix}'] = drive_em * gdf['demand'] * gdf['drivers']
+    gdf[f'total_em_kg_trip{suffix}'] = (gdf[f'transit_em{suffix}'] + gdf[f'drive_em{suffix}'])/1000
+    gdf[f'total_em_kg_yr{suffix}'] = gdf[f'total_em_kg_trip{suffix}'] * 2 * 200
+    gdf[f'total_em_kg_yr_person{suffix}'] = gdf[f'total_em_kg_yr{suffix}']/gdf['population, 2016']
 
     return gdf
-
-def infra_cost_cycling():
-    return
-
-def infra_cost_():
-    return

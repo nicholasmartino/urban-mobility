@@ -6,9 +6,10 @@ else:
     directory = '/Volumes/Samsung_T5/Databases/'
     bca_dir = '/Volumes/ELabs/50_projects/16_PICS/07_BCA data/'
 
-modes = ['walk', 'bike', 'drive', 'transit']
+modes = ['transit', 'bike', 'walk', 'drive']
 radii = [1200, 800, 400]
 r_seeds = 6
+trip_length = {'transit': 10.2, 'drive': 10.4, 'bike': 5.5, 'walk': 0.9}
 
 ss_experiments = {
     'e0': 2020,

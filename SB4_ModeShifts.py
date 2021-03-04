@@ -129,11 +129,13 @@ class ModeShifts:
             da = gpd.read_file(f"{directory}{self.city_name}.gpkg", layer='land_dissemination_area')
             overlay = gpd.sjoin(gdf, da.loc[:, ['walk', 'bike', 'bus', 'drive', 'geometry']]).groupby('id').mean()
             overlay['geometry'] = gdf['geometry']
+            overlay['walk_e0'] = overlay['walk']
+            overlay['bike_e0'] = overlay['bike']
             overlay['active_e0'] = overlay['walk'] + overlay['bike']
             overlay['transit_e0'] = overlay['bus']
             overlay['drive_e0'] = overlay['drive']
             overlay = pd.concat([overlay, gdf.loc[list(set(gdf.index).difference(set(overlay.index))), :]])
-            print(f"{self.city_name}:\n{overlay.loc[:, ['active_e0', 'transit_e0', 'drive_e0']].mean()}")
+            print(f"{self.city_name}:\n{overlay.loc[:, ['walk_e0', 'bike_e0', 'transit_e0', 'drive_e0']].mean()}")
 
             # Sum mode share and mode shift
             for mode in self.modes:
@@ -168,6 +170,7 @@ class ModeShifts:
                 mode_shifts['Mode'] = mode.title()
                 mode_shifts[f'Share'] = self.block[f'{mode}_{exp}']
                 mode_shifts['∆'] = self.block[f'd_{mode}_{exp}']
+                mode_shifts['Emissions'] = self.block[f'']
                 all_shifts = pd.concat([all_shifts, mode_shifts])
         return all_shifts
 
@@ -349,6 +352,38 @@ class ModeShifts:
         po.plot(fig, filename=f'{self.out_dir}/BoxPlot {datetime.now()}.html')
         return fig
 
+    def get_pop_count(self):
+
+        print("Joining resident counts from parcels to blocks")
+        for exp in experiments:
+            gdf = proxy_files[exp.title()]
+            gdf.columns = [col.lower() for col in gdf.columns]
+            gdf[f'population_{exp}'] = gdf['population, 2016']
+            blocks_gdf['id'] = blocks_gdf.index
+
+            # Spatial join to blocks
+            joined_population = gpd.sjoin(
+                blocks_gdf, gdf.loc[:, [f'population_{exp}', 'geometry']]) \
+                .groupby('id', as_index=False).sum()
+
+            # Merge to initial blocks layer
+            blocks_gdf = blocks_gdf.merge(
+                joined_population.loc[:, [f'population_{exp}', 'id']], on='id')
+
+        print("Estimating number of people that use each mode")
+        blocks_gdf.columns = [col.lower() for col in blocks_gdf.columns]
+        for mode in modes:
+
+            # Iterate over experiments to calculate the number of people that shifted to each mode
+            for exp in experiments:
+                # Method based on mode shifts
+                blocks_gdf[f"pop_{mode}_{exp}"] = blocks_gdf[f'population_{exp}'] * (
+                            1 + (blocks_gdf[f'd_{exp}_{mode}'] / 100))
+
+                # Method based on predicted mode share
+                blocks_gdf[f"pop_{mode}_{exp}"] = blocks_gdf[f'population_{exp}'] * blocks_gdf[f'{mode}_{exp}_rf_n']
+        return blocks_gdf
+
 
 def calculate_mode_shifts(sandbox, shares_gdfs=None, da_baseline=False):
     print("Calculating mode shifts")
@@ -369,28 +404,29 @@ def calculate_mode_shifts(sandbox, shares_gdfs=None, da_baseline=False):
     ms.grid_gdf = ms.calculate_delta(da_baseline=da_baseline)
     ms.grid_gdf = ms.mean_rs()
     ms.block = ms.join_blocks()
+    # ms.block = ms.get_pop_count()
 
-    # Sum walk and bike modes to get active transport shift
-    for m in modes:
-        if m in ['walk', 'bike']:
-            for e in ms.exp:
-                for rs in range(ms.r_seeds):
-                    ms.grid_gdf[f"d_active_{e}_s{rs}"] = ms.grid_gdf[f"d_{e}_walk_s{rs}"] + ms.grid_gdf[
-                        f"d_{e}_bike_s{rs}"]
-
-                    # Calculate average of all random seeds
-                    d = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'd_{e}_{m}' in col]]
-                    rf = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'{m}_{e}_rf' in col]]
-
-                    ms.grid_gdf[f"active_{e}"] = rf.mean(axis=1)
-                    ms.grid_gdf[f'active_{e}_max'] = rf.max(axis=1)
-                    ms.grid_gdf[f'active_{e}_min'] = rf.min(axis=1)
-                    ms.grid_gdf[f'active_{e}_med'] = rf.median(axis=1)
-
-                    ms.grid_gdf[f'd_active_{e}'] = d.mean(axis=1)
-                    ms.grid_gdf[f'd_active_{e}_max'] = d.max(axis=1)
-                    ms.grid_gdf[f'd_active_{e}_min'] = d.min(axis=1)
-                    ms.grid_gdf[f'd_active_{e}_med'] = d.median(axis=1)
+    # # Sum walk and bike modes to get active transport shift
+    # for m in modes:
+    #     if m in ['walk', 'bike']:
+    #         for e in ms.exp:
+    #             for rs in range(ms.r_seeds):
+    #                 ms.grid_gdf[f"d_active_{e}_s{rs}"] = ms.grid_gdf[f"d_{e}_walk_s{rs}"] + ms.grid_gdf[
+    #                     f"d_{e}_bike_s{rs}"]
+    #
+    #                 # Calculate average of all random seeds
+    #                 d = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'd_{e}_{m}' in col]]
+    #                 rf = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'{m}_{e}_rf' in col]]
+    #
+    #                 ms.grid_gdf[f"active_{e}"] = rf.mean(axis=1)
+    #                 ms.grid_gdf[f'active_{e}_max'] = rf.max(axis=1)
+    #                 ms.grid_gdf[f'active_{e}_min'] = rf.min(axis=1)
+    #                 ms.grid_gdf[f'active_{e}_med'] = rf.median(axis=1)
+    #
+    #                 ms.grid_gdf[f'd_active_{e}'] = d.mean(axis=1)
+    #                 ms.grid_gdf[f'd_active_{e}_max'] = d.max(axis=1)
+    #                 ms.grid_gdf[f'd_active_{e}_min'] = d.min(axis=1)
+    #                 ms.grid_gdf[f'd_active_{e}_med'] = d.median(axis=1)
     return ms
 
 if __name__ == '__main__':
