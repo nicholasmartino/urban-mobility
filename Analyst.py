@@ -56,9 +56,9 @@ from shapely.affinity import translate, scale
 from shapely.geometry import *
 from shapely.ops import nearest_points
 from skimage import morphology as mp
-from Morphology.Streets import Streets
+from UrbanZoning.City.Network import Streets
 from sklearn.cluster import KMeans
-from Morphology.Shape import relative_max_min
+from Morphology.ShapeTools import relative_max_min
 
 
 def download_file(url, filename=None):
@@ -692,9 +692,9 @@ class Network:
 			btw = betweenness(g, weight=straightness)
 			clo = closeness(g, weight=straightness)
 			prk = pagerank(g, weight=straightness)
-			egv = eigenvector(g, weight=straightness)
-			ktz = katz(g, weight=straightness)
-			hts = hits(g, weight=straightness)
+			# egv = eigenvector(g, weight=straightness)
+			# ktz = katz(g, weight=straightness)
+			# hts = hits(g, weight=straightness)
 
 			print("> Centrality measures processed, cleaning and normalizing results")
 
@@ -737,10 +737,14 @@ class Network:
 				axial_gdf['axial_degree'] = g.degree_property_map('total').get_array()
 				axial_gdf['axial_closeness'] = clo.get_array()
 				axial_gdf['axial_pagerank'] = prk.get_array()
-				axial_gdf['axial_eigenvector'] = egv[1].get_array()
-				axial_gdf['axial_katz'] = ktz.get_array()
-				axial_gdf['axial_hits1'] = hts[1].get_array()
-				axial_gdf['axial_hits2'] = hts[2].get_array()
+				try: axial_gdf['axial_eigenvector'] = egv[1].get_array()
+				except: pass
+				try: axial_gdf['axial_katz'] = ktz.get_array()
+				except: pass
+				try: axial_gdf['axial_hits1'] = hts[1].get_array()
+				except: pass
+				try: axial_gdf['axial_hits2'] = hts[2].get_array()
+				except: pass
 				axial_gdf['axial_betweenness'] = btw[0].get_array()
 				axial_gdf['axial_closeness'] = clean(axial_gdf['axial_closeness'])
 				axial_gdf['axial_betweenness'] = clean(axial_gdf['axial_betweenness'])
@@ -817,6 +821,7 @@ class Network:
 			print(edges.head(3))
 			nodes['osmid'] = nodes['osmid'].astype(int)
 			nodes = nodes.set_index('osmid', drop=False)
+			nodes.index.name = None
 			edges["from"] = edges["from"].astype(int64)
 			edges["to"] = edges["to"].astype(int64)
 

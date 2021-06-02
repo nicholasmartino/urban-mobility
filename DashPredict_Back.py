@@ -1,22 +1,61 @@
 import gc
 import os
-
-import pandas as pd
 import pickle
+
 import geopandas as gpd
 import matplotlib.font_manager as fm
+import pandas as pd
 from Analyst import Network
 from GeoLearning.Supervised import Regression
-from Sandbox import proxy_indicators, proxy_network, overlay_radius
+from Morphology.ShapeTools import Analyst
+from Sandbox import proxy_indicators, proxy_network
 from UrbanMobility.SB0_Variables import *
+from UrbanZoning.City.Network import Streets
 from matplotlib import rc
+from pandas.api.types import is_numeric_dtype
 from sklearn.ensemble import RandomForestRegressor
+from tqdm import tqdm
 
 fm.fontManager.ttflist += fm.createFontList(['/Volumes/Samsung_T5/Fonts/roboto/Roboto-Light.ttf'])
 rc('font', family='Roboto', weight='light')
 
 
-def analyze_sandbox(buildings, parcels, streets, export=True, ch_dir=os.getcwd(), sb_name='Sandbox', suffix='e0'):
+def aerial_buffer(sample_gdf, layer_dir):
+    """
+    Aggregate data from layers to sample_gdf according to defined radii
+    :param sample_gdf:
+    :param layer_dir:
+    :return:
+    """
+    # Test if sample_gdf has crs
+    assert sample_gdf.crs is not None, AttributeError ('Assign coordinate reference system to sample_gdf')
+
+    # Test if layers and columns exist within GeoPackage
+    gdfs={layer: gpd.read_feather(f'{layer_dir}/{layer}.feather') for layer, cols in tqdm(network_layers.items())}
+    for layer, cols in tqdm(network_layers.items()):
+        for column in cols:
+            assert column in gdfs[layer].columns, ValueError (f'{column} column not found in {layer} layer')
+
+    for layer, cols in tqdm(network_layers.items()):
+        for column in cols:
+            right_gdf = gdfs[layer]
+
+            # Test if right_gdf has crs
+            assert right_gdf.crs is not None, AttributeError (f'Assign coordinate reference system to {layer}')
+
+            # Test if column type is categorical or numerical
+            if is_numeric_dtype(right_gdf[column]):
+                for radius in radii:
+                    sample_gdf = Analyst(sample_gdf).buffer_join(right_gdf.loc[:, [column, 'geometry']], radius)
+            else:
+                for category in right_gdf[column].unique():
+                    filtered = right_gdf[right_gdf[column] == category]
+                    filtered[category] = 1
+                    for radius in radii:
+                        sample_gdf = Analyst(sample_gdf).buffer_join(filtered.loc[:, [category, 'geometry']], radius)
+    return sample_gdf
+
+def analyze_sandbox(buildings, parcels, streets, export=True, ch_dir=os.getcwd(), sb_name='Sandbox', suffix=''):
     # print(f"Analyzing {experiments} sandboxes")
     # for sandbox, value in experiments.items():
     #     proxy = Network(f'{sandbox} Sandbox', crs=26910, directory=f'{directory}Sandbox/{sandbox}', nodes='network_intersections')
@@ -39,6 +78,9 @@ def analyze_sandbox(buildings, parcels, streets, export=True, ch_dir=os.getcwd()
     if ch_dir[-1:] == '/': ch_dir = ch_dir[:-1]
     else: ch_dir = ch_dir
 
+    # Segmentize streets
+    streets = Streets(streets).segmentize().drop('id', axis=1)
+
     # Define geographic boundary
     sandbox = sb_name
     proxy = Network(f'{sandbox} Sandbox', crs=26910, directory=f'{ch_dir}/Sandbox/{sandbox}', nodes='network_intersections')
@@ -55,15 +97,22 @@ def analyze_sandbox(buildings, parcels, streets, export=True, ch_dir=os.getcwd()
     proxy.node_elevation()
 
     # Calculate spatial indicators
-    proxy = proxy_indicators(proxy, experiment={suffix: 2020})
+    if 'E0' in suffix: year = 2020
+    else: year = 2040
+    proxy = proxy_indicators(proxy, experiment={suffix: year})
 
-    # Perform network analysis
-    results = proxy.network_analysis(
+    # Perform network buffer analysis
+    sample_gdf = gpd.read_file(proxy.gpkg, layer=f"land_parcels_{suffix}")
+
+    # # Perform aerial buffer analysis
+    # sample_gdf = aerial_buffer(sample_gdf, proxy.gpkg)
+
+    sample_gdf = proxy.network_analysis(
         run=True,
         col_prefix='mob',
         file_prefix=f'mob_{suffix}',
         service_areas=radii,
-        sample_gdf=gpd.read_file(proxy.gpkg, layer=f"land_parcels_{suffix}"),
+        sample_gdf=sample_gdf,
         aggregated_layers=network_layers,
         keep=['OBJECTID', "population, 2016"],
         export=export)
@@ -74,7 +123,7 @@ def analyze_sandbox(buildings, parcels, streets, export=True, ch_dir=os.getcwd()
     #         results[col] = results[col]/results['divider']
 
     gc.collect()
-    return results
+    return sample_gdf
 
 def rename_features(rename):
     rename_dict2 = {}
@@ -163,11 +212,11 @@ def test_regression(proxy_gdf, label_cols, random_seeds=6, ch_dir=os.getcwd(), s
     for rs in range(random_seeds):
         print(f"\nStarting regression with random seed {rs}")
         reg.r_seed = rs
-        reg.fitted = pickle.load(open(f'Trained/FittedModel_Sunset_{rs}.sav', 'rb'))
-        reg.train_data = pickle.load(open(f'Trained/TrainData_Sunset_{rs}.sav', 'rb'))
+        reg.fitted = pickle.load(open(f'/Volumes/Samsung_T5/Databases/Sandbox/Sunset/Regression/FittedModel_Sunset_{rs}.sav', 'rb'))
+        reg.train_data = pickle.load(open(f'/Volumes/Samsung_T5/Databases/Sandbox/Sunset/Regression/TrainData_Sunset_{rs}.sav', 'rb'))
 
         # Predict sandbox using random forest
-        proxy_gdf_rs = reg.pre_norm_exp(proxy_gdf, prefix=f'rf_{rs}')
+        proxy_gdf_rs = reg.pre_norm_exp(proxy_gdf, normalize=True, prefix=f'rf_{rs}')
         gc.collect()
 
         # Append prediction to all_seeds
@@ -184,6 +233,31 @@ def test_regression(proxy_gdf, label_cols, random_seeds=6, ch_dir=os.getcwd(), s
     # Return parcels with predicted mode shares
     gc.collect()
     return all_seeds
+
+def dict_to_pandas(dictionary):
+    dfs = []
+    for k in dictionary.keys():
+        df = dictionary[k]
+        df['key'] = k
+        dfs.append(df)
+    return pd.concat(dfs)
+
+def load_importance(random_seeds=6):
+    all_df = pd.DataFrame()
+    for rs in range(random_seeds):
+        imp_dict = pickle.load(open(f'{directory}/Sandbox/Sunset/Regression/ImportanceData_Sunset_{rs}.sav', 'rb'))
+        df = dict_to_pandas(imp_dict)
+        df['rs'] = rs
+        all_df = pd.concat([all_df, df])
+    all_df = all_df.sort_values('importance', ascending=False)
+    return all_df
+
+def predict_mobility(pcl_gdf, bdg_gdf, str_gdf, mob_modes, file_path='', suffix=''):
+    proxy_gdf = analyze_sandbox(bdg_gdf, pcl_gdf, str_gdf, sb_name='Main Street', suffix=suffix, ch_dir=directory)
+    predicted = test_regression(proxy_gdf=proxy_gdf, label_cols=mob_modes, random_seeds=r_seeds).to_crs(4326)  # .loc[:, mob_modes + ['geometry']].to_crs(4326)
+    predicted = predicted.round(2)
+    predicted.to_feather(file_path)
+    return predicted
 
 directory = '/Volumes/Samsung_T5/Databases'
 rename_dict = {

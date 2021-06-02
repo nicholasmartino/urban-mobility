@@ -3,8 +3,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from shapely.geometry import Point, LineString
-from Morphology.Streets import Streets
+from UrbanZoning.City.Network import Streets
+from UrbanZoning.City.Fabric import Buildings, Parcels, Neighbourhood
 from skbio import diversity
+from Morphology.ShapeTools import Shape, Analyst
 
 print("\n> Performing simple union for district-wide layers")
 
@@ -41,7 +43,7 @@ def proxy_network(local_gbd, run=True):
             if mg.__class__.__name__ == 'LineString': mg=[mg]
             for ln in mg:
                 ni = i * 2
-                uid = lambda t: int("".join([str(o).replace('.', '') for o in list(t)]))
+                uid = lambda t: str("".join([str(o).replace('.', '') for o in list(t)]))
                 nodes.at[ni, 'osmid'] = uid(ln.coords[0])
                 nodes.at[ni, 'geometry'] = Point(ln.coords[0])
                 nodes.at[ni + 1, 'osmid'] = uid(ln.coords[1])
@@ -50,6 +52,11 @@ def proxy_network(local_gbd, run=True):
                 streets.at[i, 'from'] = uid(ln.coords[0])
                 streets.at[i, 'to'] = uid(ln.coords[1])
                 streets.at[i, 'geometry'] = ln
+
+        # Assign a number for every unique osmid string
+        replacements = {un: i for i, un in enumerate(nodes['osmid'].unique())}
+        nodes['osmid'] = nodes['osmid'].replace(replacements).astype(int)
+        streets.loc[:, ['to', 'from']] = streets.loc[:, ['to', 'from']].replace(replacements).astype(int)
 
         nodes = nodes.drop_duplicates(subset='osmid', ignore_index=True)
         old_ids = nodes.osmid.unique()
@@ -140,6 +147,7 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
         for col in land_use:
             if col in pcl_bdg_raw.columns:
                 ass_fab["n_use"] = [u[0] for u in pcl_bdg[col].unique()]
+        ass_fab.loc[ass_fab['n_use'] == 'MX', 'n_use'] = 'CM' ### !!!
 
         floor_area = ['floor_area', 'floor_area_bdg']
         for col in floor_area:
@@ -204,7 +212,7 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
         print("> Joining transit frequency data")
         stops = gpd.GeoDataFrame({
             'geometry': [Point(geom.coords[0]) for geom in streets.geometry]
-        }, geometry='geometry')
+        }, geometry='geometry', crs=streets.crs)
         stops = stops.drop_duplicates(subset=['geometry']).reset_index(drop=True)
 
         if 'bus_2020' not in streets.columns:
@@ -217,13 +225,17 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
             try: streets['rapid_2020'] = streets['Transit']
             except: streets['rapid_2020'] = np.nan
 
+        for freq in ['bus', 'freqt', 'rapid']:
+            if f'{freq}_{yr}' not in streets.columns:
+                streets[f'{freq}_{yr}'] = np.nan
+
         bus2020 = streets[streets['bus_2020'] == 1].geometry.buffer(5).unary_union
         freqt2020 = streets[streets['freqt_2020'] == 1].geometry.buffer(5).unary_union
         freqt2040 = streets[streets[f'freqt_{yr}'] == 1].geometry.buffer(5).unary_union
         rapid2020 = streets[streets['rapid_2020'] == 1].geometry.buffer(5).unary_union
         rapid2040 = streets[streets[f'rapid_{yr}'] == 1].geometry.buffer(5).unary_union
 
-        frequencies = {'freqt': 192, 'rapid': 96, 'bus': 48}
+        frequencies = {'freqt': 2.2, 'rapid': 2, 'bus': 1.5}
 
         for i in list(stops.index):
 
@@ -268,7 +280,12 @@ def estimate_demand(origin_gdf, destination_gdf):
     print("> Estimating travel demand")
     crd_gdf = destination_gdf.copy()
     gdf = origin_gdf.copy()
-    d_gdf = crd_gdf[(crd_gdf['n_use'] == 'MX') | (crd_gdf['n_use'] == 'CM')]
+
+    u_uses = list(crd_gdf['n_use'].unique())
+    if ('MX' not in u_uses) or ('CM' not in u_uses):
+        d_gdf = crd_gdf[crd_gdf['n_use'].isin(['entertainment', 'retail', 'office'])]
+    else:
+        d_gdf = crd_gdf[(crd_gdf['n_use'] == 'MX') | (crd_gdf['n_use'] == 'CM')]
     d_gdf = d_gdf.reset_index()
 
     # Make blocks GeoDataFrame
@@ -305,22 +322,52 @@ def calculate_emissions(parcel_gdf, block_gdf, suffix='', directory='/Volumes/Sa
 
     # Get number of people by mode choice by parcel
     for p in list(gdf.index):
-        gdf.at[p, 'walkers'] = len(agents[(agents['mode'] == 'walk') & (agents['parcel'] == p)])
-        gdf.at[p, 'bikers'] = len(agents[(agents['mode'] == 'bike') & (agents['parcel'] == p)])
-        gdf.at[p, 'riders'] = len(agents[(agents['mode'] == 'transit') & (agents['parcel'] == p)])
-        gdf.at[p, 'drivers'] = len(agents[(agents['mode'] == 'drive') & (agents['parcel'] == p)])
+        gdf.at[p, f'walkers{suffix}'] = len(agents[(agents['mode'] == 'walk') & (agents['parcel'] == p)])
+        gdf.at[p, f'bikers{suffix}'] = len(agents[(agents['mode'] == 'bike') & (agents['parcel'] == p)])
+        gdf.at[p, f'riders{suffix}'] = len(agents[(agents['mode'] == 'transit') & (agents['parcel'] == p)])
+        gdf.at[p, f'drivers{suffix}'] = len(agents[(agents['mode'] == 'drive') & (agents['parcel'] == p)])
 
     # Join trip demand from blocks to parcels
-    gdf = gpd.overlay(gdf, block_gdf)
+    gdf = gpd.overlay(gdf, block_gdf.loc[:, ['geometry', 'demand']])
 
     # Estimate emissions for riders and drivers
     print("> Calculating potential emissions")
     transit_em = 70
     drive_em = 120
-    gdf[f'transit_em{suffix}'] = transit_em * gdf['demand'] * gdf['riders']
-    gdf[f'drive_em{suffix}'] = drive_em * gdf['demand'] * gdf['drivers']
+    gdf[f'transit_em{suffix}'] = transit_em * gdf['demand'] * gdf[f'riders{suffix}']
+    gdf[f'drive_em{suffix}'] = drive_em * gdf['demand'] * gdf[f'drivers{suffix}']
     gdf[f'total_em_kg_trip{suffix}'] = (gdf[f'transit_em{suffix}'] + gdf[f'drive_em{suffix}'])/1000
     gdf[f'total_em_kg_yr{suffix}'] = gdf[f'total_em_kg_trip{suffix}'] * 2 * 200
     gdf[f'total_em_kg_yr_person{suffix}'] = gdf[f'total_em_kg_yr{suffix}']/gdf['population, 2016']
 
     return gdf
+
+def bldgs_to_prcls(buildings_gdf, parcels_gdf):
+    neigh = Neighbourhood(parcels=Parcels(parcels_gdf), buildings=Buildings(buildings_gdf))
+
+    # Assign OBJECTID and parcel area
+    parcels_gdf['OBJECTID'] = parcels_gdf.index
+    parcels_gdf['parcelarea'] = parcels_gdf.area
+    parcels_gdf['Shape_Area'] = parcels_gdf.area
+    parcels_gdf['Shape_Leng'] = [geom.length for geom in Shape(parcels_gdf).min_rot_rec()['largest_segment']]
+    parcels_gdf['element'] = 'Parcel'
+
+    # Get land use from building
+    to_join = ['LANDUSE', 'floor_area']
+    buildings_gdf['floor_area'] = neigh.get_gfa()['gfa']
+    overlay = gpd.overlay(parcels_gdf.drop(to_join, axis=1), buildings_gdf.loc[:, to_join + ['geometry']])
+    parcels_gdf.loc[parcels_gdf['OBJECTID'].isin(overlay['OBJECTID']), to_join] = overlay.loc[:, to_join]
+
+    # Classify shell types from land use
+    for lu in parcels_gdf['LANDUSE'].unique():
+        parcels_gdf.loc[parcels_gdf['LANDUSE'] == 'CM', 'shell_type'] = 'Retail'
+
+    # Calculate FAR
+    non_res = ['CM', 'IND']
+    parcels_gdf['FAR'] = neigh.get_fsr()['fsr']
+    parcels_gdf.loc[parcels_gdf['LANDUSE'] == 'CM', 'RFAR'] = parcels_gdf.loc[parcels_gdf['LANDUSE'] == 'CM', 'FAR']
+    parcels_gdf.loc[parcels_gdf['LANDUSE'].isin(non_res), 'FAR'] = 0
+    parcels_gdf.loc[parcels_gdf['LANDUSE'].isin(non_res), 'DDenp'] = 0
+    parcels_gdf.loc[parcels_gdf['LANDUSE'].isin(non_res), 'res_units'] = 0
+
+    return parcels_gdf

@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 import plotly.express as px
 import plotly.offline as po
 from datetime import datetime
+from UrbanZoning.City.Fabric import Neighbourhood, Parcels
 
 
 fm.fontManager.ttflist += fm.createFontList(['/Volumes/Samsung_T5/Fonts/roboto/Roboto-Light.ttf'])
@@ -21,7 +22,7 @@ rc('font', family='Roboto', weight='light')
 
 
 class ModeShifts:
-    def __init__(self, baselines, scenarios, modes, block_gdf=None, random_seeds=1, directory=os.getcwd(), suffix='', c_maps=None, plot=True, memory=False, shares_gdfs=None, city_name=None):
+    def __init__(self, baseline, modes, block_gdf=None, random_seeds=1, directory=os.getcwd(), suffix='', c_maps=None, plot=True, memory=False, shares_gdfs=None, city_name=None):
         """
         :param scenarios: list of scenarios
         :param modes: list of modes
@@ -31,16 +32,16 @@ class ModeShifts:
         :param suffix: suffix when reading scenario files
         """
 
-        self.exp = scenarios
+        self.exp = shares_gdfs.keys()
         self.modes = modes
         self.r_seeds = random_seeds
         self.dir = directory
         if not os.path.exists(f'{self.dir}/ModeShifts'): os.mkdir(f'{self.dir}/ModeShifts')
         self.out_dir = f'{self.dir}/ModeShifts'
-        self.baselines = baselines
-        self.grid_gdf = polygon_grid(self.baselines[0], cell_size=30)
+        self.baseline = baseline
+        self.grid_gdf = polygon_grid(self.baseline, cell_size=30)
         self.suffix = suffix
-        self.fig_size = (3 * len(self.get_files(0).keys()), 12)
+        # self.fig_size = (3 * len(self.get_files(0).keys()), 12)
         self.cmaps = c_maps
         self.plot = plot
         self.min = -30
@@ -48,9 +49,7 @@ class ModeShifts:
         self.memory = memory
         self.shares_gdfs = shares_gdfs
         self.city_name = city_name
-
-        if block_gdf is not None: self.block = block_gdf
-
+        self.block = block_gdf
         return
 
     def get_files(self, rs):
@@ -92,7 +91,9 @@ class ModeShifts:
 
             for exp, file in proxy_files.items():
                 if self.shares_gdfs is None: proxy_gdf = proxy_files[exp]
-                else: proxy_gdf = self.shares_gdfs[exp][rs]
+                else:
+                    try: proxy_gdf = self.shares_gdfs[exp][rs]
+                    except: proxy_gdf = self.shares_gdfs[exp]
                 proxy_gdf.crs = 26910
 
                 # Join geometry from block layer if it doesn't exist
@@ -101,7 +102,9 @@ class ModeShifts:
 
                 # Join baseline data
                 for mode in self.modes:
-                    proxy_gdf[f"{mode}_e0_rf_{rs}_n"] =  self.baselines[rs][f"{mode}_e0_rf_{rs}_n"]
+                    proxy_gdf[f"{mode}_e0_rf_{rs}_n"] =  self.baseline[f"{mode}_rf_{rs}_n"]
+                    proxy_gdf[f"{mode}_{exp}_rf_{rs}_n"] = proxy_gdf[f"{mode}_rf_{rs}_n"]
+                    proxy_gdf = proxy_gdf.drop(f"{mode}_rf_{rs}_n", axis=1)
 
                 base_cols = [i for mode in self.modes for i in [f"{mode}_{exp}_rf_{rs}_n", f"{mode}_e0_rf_{rs}_n"]]
                 grid_gdf = gpd.sjoin(
@@ -112,12 +115,15 @@ class ModeShifts:
 
                 # Calculate delta from E0
                 for mode in self.modes:
-                    gdf[f"{mode}_{exp}_rf_{rs}_n"] = grid_gdf[f"{mode}_{exp}_rf_{rs}_n"]
+                    # grid_gdf[f"{mode}_{exp}_rf_{rs}_n"] = grid_gdf[f"{mode}_rf_{rs}_n"]
 
                     shift = ((grid_gdf[f"{mode}_{exp}_rf_{rs}_n"] - grid_gdf[f"{mode}_e0_rf_{rs}_n"]) / grid_gdf[f"{mode}_e0_rf_{rs}_n"])
                     grid_gdf[f"d_{mode}_{exp}_s{rs}"] = shift
-                    gdf[f"d_{mode}_{exp}_s{rs}"] = shift
 
+            for mode in self.modes:
+                grid_gdf[f'd_{mode}_e0'] = 0
+
+        gdf = grid_gdf.copy()
         # Calculate average of random seeds on E0
         for mode in self.modes:
             gdf[f"{mode}_e0"] = grid_gdf.loc[:, [col for col in grid_gdf.columns if f'{mode}_e0' in col]].mean(axis=1)
@@ -127,7 +133,9 @@ class ModeShifts:
             # Get baseline mode share from the real place
             gdf['id'] = gdf.index
             da = gpd.read_file(f"{directory}{self.city_name}.gpkg", layer='land_dissemination_area')
-            overlay = gpd.sjoin(gdf, da.loc[:, ['walk', 'bike', 'bus', 'drive', 'geometry']]).groupby('id').mean()
+            overlay = gpd.sjoin(
+                gdf.loc[:, [col for col in gdf.columns if col not in ['index_left', 'index_right']]],
+                da.loc[:, ['walk', 'bike', 'bus', 'drive', 'geometry']]).groupby('id').mean()
             overlay['geometry'] = gdf['geometry']
             overlay['walk_e0'] = overlay['walk']
             overlay['bike_e0'] = overlay['bike']
@@ -160,18 +168,29 @@ class ModeShifts:
         else:
             return gdf
 
-    def get_all_data(self):
+    def get_all_data(self, emissions=False):
         all_shifts = pd.DataFrame()
-        for mode in self.modes:
-            for i, exp in enumerate(self.exp):
+        for j, mode in enumerate(self.modes):
+            if mode == 'transit': people = 'riders'
+            elif mode == 'drive': people = 'drivers'
+            else: people = None
+            for i, exp in enumerate(['e0'] + list(self.exp)):
                 mode_shifts = pd.DataFrame()
                 mode_shifts['Block'] = self.block.index
-                mode_shifts['Experiment'] = exp.title()
+                mode_shifts['Experiment'] = exp
                 mode_shifts['Mode'] = mode.title()
                 mode_shifts[f'Share'] = self.block[f'{mode}_{exp}']
                 mode_shifts['∆'] = self.block[f'd_{mode}_{exp}']
-                mode_shifts['Emissions'] = self.block[f'']
+                mode_shifts['Order'] = i + j
+                if emissions:
+                    if mode in ['drive', 'transit']:
+                        mode_shifts['Emissions'] = self.block[f'{mode}_em_{exp}']
+                        mode_shifts['Emissions/Cap.'] = self.block[f'{mode}_em_{exp}']/self.block[f'{people}_{exp}']
+                    else:
+                        mode_shifts['Emissions'] = 0
+                        mode_shifts['Emissions/Cap.'] = 0
                 all_shifts = pd.concat([all_shifts, mode_shifts])
+                all_shifts = all_shifts.fillna(0)
         return all_shifts
 
     def plot_grid_map(self):
@@ -260,7 +279,11 @@ class ModeShifts:
 
     def join_blocks(self):
         grid_gdf = self.grid_gdf.copy()
-        block_gdf = self.block.copy()
+
+        if self.block is None:
+            block_gdf = Neighbourhood(parcels=Parcels(pd.concat(self.shares_gdfs.values()))).generate_blocks()
+        else:
+            block_gdf = self.block.copy()
 
         print("Joining results to block")
         block_gdf['i'] = block_gdf.index
@@ -385,48 +408,45 @@ class ModeShifts:
         return blocks_gdf
 
 
-def calculate_mode_shifts(sandbox, shares_gdfs=None, da_baseline=False):
+def calculate_mode_shifts(base_gdf, city_name, shares_gdfs=None, da_baseline=False):
     print("Calculating mode shifts")
     ms = ModeShifts(
-        directory=f'{directory}Sandbox/{sandbox}',
-        baselines={rs: gpd.read_feather(f'{directory}Sandbox/{sandbox}/Regression/test_e0_s{rs}_{sandbox}.feather')
-                   for rs in range(r_seeds)},
-        scenarios=['e0'] + list(experiments[sandbox][1].keys())[1:],
+        baseline=base_gdf,
         modes=modes,
-        block_gdf=gpd.read_file(f'{directory}Sandbox/{sandbox}/{sandbox} Sandbox.gpkg', layer='land_parcels_e0'),
-        suffix=f'_{sandbox}',
+        # block_gdf=gpd.read_file(f'{directory}Sandbox/{sandbox}/{sandbox} Sandbox.gpkg', layer='land_parcels_e0'),
         random_seeds=r_seeds,
         plot=False,
         c_maps=['PiYG', 'PuOr', 'coolwarm'],
         shares_gdfs=shares_gdfs,
-        city_name=experiments[sandbox][0],
+        city_name=city_name,
     )
     ms.grid_gdf = ms.calculate_delta(da_baseline=da_baseline)
     ms.grid_gdf = ms.mean_rs()
     ms.block = ms.join_blocks()
-    # ms.block = ms.get_pop_count()
 
-    # # Sum walk and bike modes to get active transport shift
-    # for m in modes:
-    #     if m in ['walk', 'bike']:
-    #         for e in ms.exp:
-    #             for rs in range(ms.r_seeds):
-    #                 ms.grid_gdf[f"d_active_{e}_s{rs}"] = ms.grid_gdf[f"d_{e}_walk_s{rs}"] + ms.grid_gdf[
-    #                     f"d_{e}_bike_s{rs}"]
-    #
-    #                 # Calculate average of all random seeds
-    #                 d = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'd_{e}_{m}' in col]]
-    #                 rf = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'{m}_{e}_rf' in col]]
-    #
-    #                 ms.grid_gdf[f"active_{e}"] = rf.mean(axis=1)
-    #                 ms.grid_gdf[f'active_{e}_max'] = rf.max(axis=1)
-    #                 ms.grid_gdf[f'active_{e}_min'] = rf.min(axis=1)
-    #                 ms.grid_gdf[f'active_{e}_med'] = rf.median(axis=1)
-    #
-    #                 ms.grid_gdf[f'd_active_{e}'] = d.mean(axis=1)
-    #                 ms.grid_gdf[f'd_active_{e}_max'] = d.max(axis=1)
-    #                 ms.grid_gdf[f'd_active_{e}_min'] = d.min(axis=1)
-    #                 ms.grid_gdf[f'd_active_{e}_med'] = d.median(axis=1)
+    active = False
+    if active:
+        # Sum walk and bike modes to get active transport shift
+        for m in modes:
+            if m in ['walk', 'bike']:
+                for e in ms.exp:
+                    for rs in range(ms.r_seeds):
+                        ms.grid_gdf[f"d_active_{e}_s{rs}"] = ms.grid_gdf[f"d_{e}_walk_s{rs}"] + ms.grid_gdf[
+                            f"d_{e}_bike_s{rs}"]
+
+                        # Calculate average of all random seeds
+                        d = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'd_{e}_{m}' in col]]
+                        rf = ms.grid_gdf.loc[:, [col for col in ms.grid_gdf.columns if f'{m}_{e}_rf' in col]]
+
+                        ms.grid_gdf[f"active_{e}"] = rf.mean(axis=1)
+                        ms.grid_gdf[f'active_{e}_max'] = rf.max(axis=1)
+                        ms.grid_gdf[f'active_{e}_min'] = rf.min(axis=1)
+                        ms.grid_gdf[f'active_{e}_med'] = rf.median(axis=1)
+
+                        ms.grid_gdf[f'd_active_{e}'] = d.mean(axis=1)
+                        ms.grid_gdf[f'd_active_{e}_max'] = d.max(axis=1)
+                        ms.grid_gdf[f'd_active_{e}_min'] = d.min(axis=1)
+                        ms.grid_gdf[f'd_active_{e}_med'] = d.median(axis=1)
     return ms
 
 if __name__ == '__main__':
