@@ -85,14 +85,14 @@ app.layout = html.Div(children=[
             html.Label('BASELINE'),
             dcc.Dropdown(
                 id='baseline',
-                options=get_options(sorted(os.listdir('Regression'))),
+                options=get_options(sorted(os.listdir('regression'))),
             ),
 
             html.Br(),
             html.Label('SCENARIOS'),
             dcc.Dropdown(
                 id='scenarios',
-                options=get_options(sorted(os.listdir('Regression'))),
+                options=get_options(sorted(os.listdir('regression'))),
                 multi=True
             ),
 
@@ -149,11 +149,11 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
                 for scenario in scenarios:
                     file_type = scenario.split('.')[len(scenario.split('.')) -1]
                     if file_type == 'feather':
-                        gdf = gpd.read_feather(f'Regression/{scenario}').to_crs(26910)
+                        gdf = gpd.read_feather(f'regression/{scenario}').to_crs(26910)
                     else:
-                        gdf = gpd.read_file(f'Regression/{scenario}').to_crs(26910)
+                        gdf = gpd.read_file(f'regression/{scenario}').to_crs(26910)
                     shares_gdfs[scenario] = gdf
-                base_gdf = gpd.read_feather(f'Regression/{baseline}').to_crs(26910)
+                base_gdf = gpd.read_feather(f'regression/{baseline}').to_crs(26910)
 
                 # Calculate mode shifts
                 ms = calculate_mode_shifts(base_gdf=base_gdf, shares_gdfs=shares_gdfs, da_baseline=da_baseline,
@@ -169,7 +169,7 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
                 print("\n ### Updating predictions ###")
 
                 for scenario in scenarios:
-                    predict_mobility(PARCELS, BUILDINGS, STREETS, modes, f'Regression/{scenario}')
+                    predict_mobility(PARCELS, BUILDINGS, STREETS, modes, f'regression/{scenario}')
 
                 if not os.path.exists(f"{path}NetworkAnalysis.sav"):
                     # Update Sandbox analysis
@@ -206,9 +206,9 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
 
                         # Predict mode shares
                         predictions[exp][rs] = {}
-                        reg.fitted = pickle.load(open(f'{path}Regression/FittedModel_{sandbox}_{rs}.sav', 'rb'))
-                        reg.train_data = pickle.load(open(f'{path}Regression/TrainData_{sandbox}_{rs}.sav', 'rb'))
-                        reg.feat_imp = pickle.load(open(f'{path}Regression/ImportanceData_{sandbox}_{rs}.sav', 'rb'))
+                        reg.fitted = pickle.load(open(f'{path}regression/FittedModel_{sandbox}_{rs}.sav', 'rb'))
+                        reg.train_data = pickle.load(open(f'{path}regression/TrainData_{sandbox}_{rs}.sav', 'rb'))
+                        reg.feat_imp = pickle.load(open(f'{path}regression/ImportanceData_{sandbox}_{rs}.sav', 'rb'))
                         predictions[exp][rs] = reg.pre_norm_exp(gdf, export=False)
 
                         for mode in modes:
