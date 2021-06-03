@@ -4,7 +4,7 @@ import geopandas as gpd
 from UrbanScraper.Local import BritishColumbia
 from UrbanScraper.Scraper import Canada
 from SB0_Variables import *
-from UrbanMobility.DashPredict_Back import aerial_buffer
+from UrbanMobility.Predictor import aerial_buffer
 
 # Perform network analysis for the real place
 for key, value in regions.items():

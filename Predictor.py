@@ -16,7 +16,7 @@ from pandas.api.types import is_numeric_dtype
 from sklearn.ensemble import RandomForestRegressor
 from tqdm import tqdm
 
-fm.fontManager.ttflist += fm.createFontList(['/Volumes/Samsung_T5/Fonts/roboto/Roboto-Light.ttf'])
+fm.fontManager.ttflist += fm.createFontList(['/Volumes/Samsung_T5/Fonts/avenir/Roboto-Light.ttf'])
 rc('font', family='Roboto', weight='light')
 
 
