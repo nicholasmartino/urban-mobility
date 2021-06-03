@@ -9,7 +9,7 @@ urban form future scenarios.
 
 ### Analyzing urban form
 Urban form data (explanatory) is aggregated using network analysis tools from [Pandana](https://github.com/UDST/pandana). The data was trained using data from Metro Vancouver, Canada.
-* Transit Frequency, downloaded from ;
+* Transit Frequency, downloaded from [OpenMobilityData](https://transitfeeds.com/p/translink-vancouver/29);
 * Commercial Land Use, inferred from [OpenStreetMap](https://www.openstreetmap.org/) data and downloaded using [OSMnx](https://github.com/gboeing/osmnx);
 * Population Density, downloaded from [Statistics Canada](https://www150.statcan.gc.ca/n1/pub/92-195-x/2011001/other-autre/pop/pop-eng.htm);
 * Number of Dwellings, also downloaded fron [Statistics Canada](https://www12.statcan.gc.ca/census-recensement/2016/ref/guides/001/98-500-x2016001-eng.cfm). 
