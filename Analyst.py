@@ -1306,7 +1306,7 @@ class Network:
 			gdf = self.DAs.loc[self.DAs.geometry.area < max_area]
 			layer = 'land_dissemination_area'
 
-		# Pre process database for UrbanMobility 1600x1600m 'Sandbox'
+		# Pre process database for urban-mobility 1600x1600m 'Sandbox'
 		elif unit == 'elab_sandbox':
 			self.directory = 'Sandbox/'+elab_name
 			self.gpkg = elab_name+'.gpkg'
@@ -1890,7 +1890,7 @@ class Network:
 		boundaries.plot(ax=ax, color='black', linewidth=0.2, linestyle='solid', alpha=0.6)
 		centroids.plot(ax=ax, color='#88D2D5', markersize=0.2)
 		plt.axis('off')
-		plt.savefig('Diagrams/'+self.municipality+' - UrbanMobility Diagram.png', dpi=600)
+		plt.savefig('Diagrams/'+self.municipality+' - urban-mobility Diagram.png', dpi=600)
 
 		return self
 

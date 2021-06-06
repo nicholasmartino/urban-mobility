@@ -169,7 +169,7 @@ for infra, values in {'bus': 'Frequent transit', 'bike': 'Cycling lanes'}.items(
     price_per_liter = 1.2
     mtn_cost_per_km = 0.07 #https://driving.ca/auto-news/news/part-2-how-much-should-standard-car-maintenance-cost
     annual_insurance = 1400 #https://www.ratelab.ca/how-much-does-it-cost-to-own-and-operate-a-car-in-canada/
-    cost_car_year_bc = 700 * 12 #City of Victoria, 2009. Go Victoria: Our UrbanMobility Future
+    cost_car_year_bc = 700 * 12 #City of Victoria, 2009. Go Victoria: Our urban-mobility Future
     transit_fare = 2.5
     bike_mtn_per_yr = 120 #https://bicycles.stackexchange.com/questions/15874/cost-of-maintenance-of-a-roadbike
     for i, exp in enumerate(experiments):
