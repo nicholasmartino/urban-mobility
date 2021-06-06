@@ -23,4 +23,4 @@ The trained model can be found at the regression folder.
 When more than one urban form layer is analyzed, mode shifts results can be calculated and displayed in a [Plotly](https://github.com/plotly/dash) dashboard.
 
 ## License
-![cc-by-image](https://i.creativecommons.org/l/by/4.0/88x31.png)
+[![cc-by-image](https://i.creativecommons.org/l/by/4.0/88x31.png)](https://creativecommons.org/licenses/by/4.0/)
