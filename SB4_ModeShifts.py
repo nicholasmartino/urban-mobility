@@ -5,7 +5,10 @@ import geopandas as gpd
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
-from UrbanScraper.Converter import polygon_grid
+import sys
+sys.path.insert(1, "/Volumes/Macintosh HD/Users/nicholasmartino/Google Drive/Python/urban-scraper")
+
+from Converter import polygon_grid
 from SB0_Variables import *
 from matplotlib import rc
 from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -161,7 +164,8 @@ class ModeShifts:
             if 'index_right' in overlay.columns: overlay = overlay.drop('index_right', axis=1)
 
             overlay.crs = gdf.crs
-            overlay = overlay.fillna(method='ffill')
+            # overlay = overlay.dropna(axis=1)
+            overlay = overlay.dropna(axis=1, how='all')
 
             return overlay
 

@@ -1,30 +1,34 @@
-import os
+import sys
 import time
 
-import dash
+from dash import Dash
+from dash.dependencies import Input, Output, State
 import dash_bootstrap_components as dbc
 import dash_core_components as dcc
 import dash_daq as daq
 import dash_html_components as html
-import geopandas as gpd
 import matplotlib
+import os
+import pickle
 import plotly.express as px
 import plotly.graph_objects as go
-from Dash_ModeShares import PARCELS, BUILDINGS, STREETS
+from plotly.subplots import make_subplots
+
+from Dash_ModeShares import str_gdf
 from Predictor import *
 from Proximity import Proximity
-from plotly.subplots import make_subplots
 
 matplotlib.use('Agg')
 
 start_time = time.time()
+sys.path.insert(1, "/Volumes/Macintosh HD/Users/nicholasmartino/Google Drive/Python/GeoLearning")
 from GeoLearning.Supervised import Regression
 print(f"--- {(time.time() - start_time)}s ---")
 start_time = time.time()
-from UrbanMobility.SB3_AnalyzeSandbox import analyze_sandbox
+from SB3_AnalyzeSandbox import analyze_sandbox
 print(f"--- {(time.time() - start_time)}s ---")
 start_time = time.time()
-from UrbanMobility.SB4_ModeShifts import calculate_mode_shifts
+from SB4_ModeShifts import calculate_mode_shifts
 print(f"--- {(time.time() - start_time)}s ---")
 from Sandbox import calculate_emissions, estimate_demand
 print("Import finished")
@@ -51,11 +55,23 @@ def get_options(series):
     elif series.__class__.__name__ == 'list':
         return [{'label': i, 'value':i} for i in series]
 
-options = [{'label': i, 'value':i} for i in os.listdir(f"{directory}/Sandbox") if os.path.isdir(f'{directory}/Sandbox/{i}')]
 
-app = dash.Dash(__name__, external_stylesheets=external_stylesheets)
+def read_gdfs(f_path, files):
+    gdfs = {}
+    for file in files:
+        file_type = file.split('.')[len(file.split('.')) - 1]
+        if file_type == 'feather':
+            gdf = gpd.read_feather(f'{f_path}/{file}').to_crs(26910)
+        else:
+            gdf = gpd.read_file(f'{f_path}/{file}').to_crs(26910)
+        gdfs[file] = gdf
+    return gdfs
+
+
+app = Dash(__name__, external_stylesheets=external_stylesheets)
 app.layout = html.Div(children=[
     dbc.Row([
+
         dbc.Col(style={'width': '80%', 'display':'inline-block'}, children=[
             dcc.Graph(id='mode_shifts', style={'height': '50vh'}),
             dcc.Graph(id='mode_shares', style={'height': '20vh'}),
@@ -70,31 +86,37 @@ app.layout = html.Div(children=[
             html.Br(),
 
             html.Label('DIRECTORY'),
-            dcc.Input(id='directory', value=directory, style={'width': '100%'}),
+            dcc.Input(id='directory', value=f'{directory}/Sandbox/Main Street/Regressed', style={'width': '100%'}),
 
             html.Br(),
             html.Br(),
             html.Label('SANDBOX NAME'),
-            dcc.Dropdown(
+            dcc.Input(
                 id='sandbox',
-                options=options,
                 value='Main Street'
             ),
 
             html.Br(),
+            html.Br(),
+
             html.Label('BASELINE'),
-            dcc.Dropdown(
-                id='baseline',
-                options=get_options(sorted(os.listdir('regression'))),
-            ),
+
+            html.Br(),
+            html.Label('Parcels'),
+            html.Div(id='baseline'),
+
+            html.Label('Buildings'),
+            html.Div(id='baseline_b'),
 
             html.Br(),
             html.Label('SCENARIOS'),
-            dcc.Dropdown(
-                id='scenarios',
-                options=get_options(sorted(os.listdir('regression'))),
-                multi=True
-            ),
+            html.Br(),
+
+            html.Label('Parcels'),
+            html.Div(id='scenarios'),
+
+            html.Label('Buildings'),
+            html.Div(id='scenarios_b'),
 
             html.Br(),
             html.Label('INDICATOR'),
@@ -120,21 +142,35 @@ app.layout = html.Div(children=[
 ])
 
 
+# Tie a callback to the interval
+@app.callback(Output('scenarios', 'children'),
+              Output('baseline', 'children'),
+              Output('scenarios_b', 'children'),
+              Output('baseline_b', 'children'),
+              [Input('directory', 'value')])
+def update_metrics(direct):
+    scenarios = dcc.Dropdown(id='scenarios', options=get_options(sorted(os.listdir(direct))), multi=True)
+    baseline = dcc.Dropdown(id='baseline', options=get_options(sorted(os.listdir(direct)))),
+    scenarios_b = dcc.Dropdown(id='scenarios_b', options=get_options(sorted(os.listdir(direct))), multi=True)
+    baseline_b = dcc.Dropdown(id='baseline_b', options=get_options(sorted(os.listdir(direct))))
+    return scenarios, baseline, scenarios_b, baseline_b
+
 @app.callback(
-    dash.dependencies.Output('mode_shifts', 'figure'),
-    dash.dependencies.Output('mode_shares', 'figure'),
-    dash.dependencies.Output('emissions', 'figure'),
-    [dash.dependencies.Input('directory', 'value'),
-     dash.dependencies.Input('sandbox', 'value'),
-     dash.dependencies.Input('indicator', 'value'),
-     dash.dependencies.Input('da_baseline', 'value'),
-     dash.dependencies.Input('baseline', 'value'),
-     dash.dependencies.Input('scenarios', 'value'),
-     dash.dependencies.Input('update_shifts', 'value'),
-     dash.dependencies.Input('update_prediction', 'n_clicks')],
-    [dash.dependencies.State('input-on-submit', 'value')]
+    Output('mode_shifts', 'figure'),
+    Output('mode_shares', 'figure'),
+    Output('emissions', 'figure'),
+    [Input('directory', 'value'),
+     Input('sandbox', 'value'),
+     Input('indicator', 'value'),
+     Input('da_baseline', 'value'),
+     Input('baseline', 'value'),
+     Input('scenarios', 'value'),
+     Input('baseline_b', 'value'),
+     Input('scenarios_b', 'value'),
+     Input('update_prediction', 'n_clicks')],
+    [State('input-on-submit', 'value')]
 )
-def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenarios, update_shifts, update_prediction, submit):
+def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenarios, baseline_b, scenarios_b, update_prediction, submit):
         imp_file = f'{directory}/Sandbox/{sandbox} - Features.csv'
         ms_file = f'{directory}/Sandbox/{sandbox} - ModeShifts.csv'
         path = f"{folder_path}/Sandbox/{sandbox}/"
@@ -143,33 +179,30 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
             os.mkdir("images")
         initial_path = os.getcwd()
 
+        bsl_prcl = read_gdfs(folder_path, [baseline])
+        bsl_bldg = read_gdfs(folder_path, [baseline_b])
+        exp_prcl = read_gdfs(folder_path, scenarios)
+        exp_bldg = read_gdfs(folder_path, scenarios_b)
+        base_gdf = gpd.read_feather(f'{folder_path}/{baseline}').to_crs(26910)
+
         if indicator == 'Mode Shifts':
-            if update_shifts:
-                shares_gdfs = {}
-                for scenario in scenarios:
-                    file_type = scenario.split('.')[len(scenario.split('.')) -1]
-                    if file_type == 'feather':
-                        gdf = gpd.read_feather(f'regression/{scenario}').to_crs(26910)
-                    else:
-                        gdf = gpd.read_file(f'regression/{scenario}').to_crs(26910)
-                    shares_gdfs[scenario] = gdf
-                base_gdf = gpd.read_feather(f'regression/{baseline}').to_crs(26910)
 
-                # Calculate mode shifts
-                ms = calculate_mode_shifts(base_gdf=base_gdf, shares_gdfs=shares_gdfs, da_baseline=da_baseline,
-                                           city_name='Metro Vancouver, British Columbia')
+            # Calculate mode shifts
+            ms = calculate_mode_shifts(base_gdf=base_gdf, shares_gdfs=exp_prcl, da_baseline=da_baseline,
+                                       city_name='Metro Vancouver, British Columbia')
 
-                # Disaggregate modes and experiments data
-                all_data = ms.get_all_data().reset_index(drop=True)
-                all_data['Sandbox'] = str(sandbox)
-                all_data.to_csv(ms_file, index=False)
-                df = all_data
+            # Disaggregate modes and experiments data
+            all_data = ms.get_all_data().reset_index(drop=True)
+            all_data['Sandbox'] = str(sandbox)
+            all_data.to_csv(ms_file, index=False)
+            df = all_data
 
-            if update_prediction:
+            if False:
+
                 print("\n ### Updating predictions ###")
 
-                for scenario in scenarios:
-                    predict_mobility(PARCELS, BUILDINGS, STREETS, modes, f'regression/{scenario}')
+                for scenario, scenario_b in zip(scenarios, scenarios_b):
+                    predict_mobility(exp_prcl[scenario], exp_bldg[scenario_b], str_gdf, modes, f'{folder_path}')
 
                 if not os.path.exists(f"{path}NetworkAnalysis.sav"):
                     # Update Sandbox analysis
@@ -237,8 +270,7 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
                 importance_dis.to_csv(f'{directory}Sandbox/{sandbox} - Features.csv', index=False)
 
                 # Calculate mode shifts
-                ms = calculate_mode_shifts(
-                    sandbox=sandbox, shares_gdfs={exp.lower(): predictions[exp] for exp in exps}, da_baseline=da_baseline)
+                ms = calculate_mode_shifts(shares_gdfs={exp.lower(): predictions[exp] for exp in exps}, da_baseline=da_baseline)
 
                 # Get trip demand for region
                 demand = False
@@ -267,10 +299,6 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
                 all_data.to_csv(ms_file, index=False)
                 df = all_data
                 print(f"--- {(time.time() - start_time)}s --- {directory}Sandbox/{sandbox} - ModeShifts.csv")
-            # else:
-                # importance_dis = pd.read_csv(imp_file)
-                # df = pd.read_csv(ms_file)
-                # exps = list(df['Experiment'].unique())
 
             importance=False
             if importance:
@@ -372,7 +400,7 @@ def update_output(folder_path, sandbox, indicator, da_baseline, baseline, scenar
             features = imp.groupby('feature').sum().sort_values('importance', ascending=False).index[:10]
             imp_feat = pd.DataFrame()
             for i, sc in enumerate(scenarios):
-                sc_mean = shares_gdfs[sc].loc[:, features].mean()
+                sc_mean = exp_prcl[sc].loc[:, features].mean()
                 base_mean = base_gdf.loc[:, features].mean()
                 sc_df = pd.DataFrame(sc_mean, columns=[f'Value'])
                 sc_df[f'Change (%)'] = ((sc_mean - base_mean)/base_mean) * 100

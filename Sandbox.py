@@ -119,6 +119,8 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
             res_count_col = 'res_count_bdg'
             parcels2["population, 2016"] = pcl_bdg.sum()[res_count_col].values
         print(f"{exp} experiment with {parcels2['population, 2016'].sum()} people")
+        try: parcels2 = parcels2.drop('OBJECTID', axis=1)
+        except: pass
         parcels2.to_file(local_gbd.gpkg, layer=f"land_parcels_{exp}", driver='GPKG')
 
         print("> Adapting parcels to dissemination area")

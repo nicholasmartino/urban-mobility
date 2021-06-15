@@ -14,7 +14,7 @@ import dash_html_components as html
 import dash_bootstrap_components as dbc
 from dash.dependencies import Input, Output, State
 from Predictor import *
-from UrbanMobility.SB0_Variables import *
+from SB0_Variables import *
 from matplotlib import colors, cm
 from shapely.geometry import Polygon
 from Visualization.Colors import get_rgb_values

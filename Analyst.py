@@ -39,6 +39,8 @@ import seaborn as sns
 import skbio.diversity as div
 import statsmodels.api as sm
 from PIL import Image
+import sys
+sys.path.insert(1, "/Volumes/Macintosh HD/Users/nicholasmartino/Google Drive/Python")
 from Statistics.basic_stats import shannon_div
 from fiona import listlayers
 from tqdm import tqdm

@@ -9,7 +9,7 @@ from Analyst import Network
 from GeoLearning.Supervised import Regression
 from Morphology.ShapeTools import Analyst
 from Sandbox import proxy_indicators, proxy_network
-from UrbanMobility.SB0_Variables import *
+from SB0_Variables import *
 from UrbanZoning.City.Network import Streets
 from matplotlib import rc
 from pandas.api.types import is_numeric_dtype
