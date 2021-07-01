@@ -328,7 +328,7 @@ class Network:
 
 			return elevations[SAMPLES - 1 - lat_row, lon_row].astype(int)
 
-	def node_elevation(self, run=True):
+	def node_elevation(self, run=True, elevation=True):
 		if run:
 			start_time = timeit.default_timer()
 
@@ -338,17 +338,18 @@ class Network:
 			nodes_gdf.crs = self.crs
 			nodes_gdf_4326 = nodes_gdf.to_crs(epsg=4326)
 
-			elevations = []
-			for node in nodes_gdf_4326.geometry:
-				try: lon = node.x
-				except: lon = node[0].x
-				try: lat = node.y
-				except: lat = node[0].y
-				filename = 'N' + str(int(lat)) + 'W' + str((int(lon) * -1) + 1) + '.hgt'
-				# Extract elevation data from .hgt file and add it to list
-				elevations.append(self.elevation(f'{self.directory}/Topography/{filename}', lon, lat))
+			if elevation:
+				elevations = []
+				for node in nodes_gdf_4326.geometry:
+					try: lon = node.x
+					except: lon = node[0].x
+					try: lat = node.y
+					except: lat = node[0].y
+					filename = 'N' + str(int(lat)) + 'W' + str((int(lon) * -1) + 1) + '.hgt'
+					# Extract elevation data from .hgt file and add it to list
+					elevations.append(self.elevation(f'{self.directory}/Topography/{filename}', lon, lat))
 
-			nodes_gdf['elevation'] = elevations
+				nodes_gdf['elevation'] = elevations
 			nodes_gdf.to_file(self.gpkg, layer='network_nodes')
 
 			elapsed = round((timeit.default_timer() - start_time) / 60, 1)

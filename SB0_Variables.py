@@ -7,7 +7,7 @@ else:
     bca_dir = '/Volumes/ELabs/50_projects/16_PICS/07_BCA data/'
 
 modes = ['transit', 'bike', 'walk', 'drive']
-radii = [1600, 1200, 800, 400]
+radii = [1200, 400]
 r_seeds = 6
 trip_length = {'transit': 10.2, 'drive': 10.4, 'bike': 5.5, 'walk': 0.9}
 
@@ -49,11 +49,11 @@ regions = {
 
 network_layers = {
     'network_stops': ["frequency"],
-    'network_nodes': ["elevation"],
-    'network_walk': ["walk_length", "walk_straight"],
-    'network_bike': ["bike_length", "bike_straight"],
-    'network_drive': ["drive_length", "drive_straight"],
-    'land_assessment_parcels': ["area_sqkm", "n_size"],
+    # 'network_nodes': ["elevation"],
+    'network_walk': ["walk_length"],
+    'network_bike': ["bike_length"],
+    # 'network_drive': ["drive_length"],
+    # 'land_assessment_parcels': ["area_sqkm"],
     'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016", "n_dwellings"],
     'land_assessment_fabric': ["n_use", "number_of_bedrooms"],
 }
@@ -123,3 +123,5 @@ network_bike = {
     'land_dissemination_area': ["population, 2016", "population density per square kilometre, 2016"], # "n_dwellings"]
 }
 """
+
+DIRECTORY = "/Volumes/SALA/Research/eLabs/50_projects/20_City_o_Vancouver/SSHRC Partnership Engage/Sandbox/shp/MainSt/Experiment"

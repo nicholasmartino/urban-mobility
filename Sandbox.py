@@ -38,6 +38,7 @@ def proxy_network(local_gbd, run=True):
         streets_initial = gpd.read_file(local_gbd.gpkg, layer='network_links')
         streets = streets_initial.reset_index(drop=True)
 
+        # Potentially a function of Network class
         nodes = gpd.GeoDataFrame(columns=['geometry'])
         for i, mg in enumerate(streets.geometry):
             if mg.__class__.__name__ == 'LineString': mg=[mg]
@@ -137,13 +138,13 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
         print("> Adapting parcels to assessment fabric")
         ass_fab = parcels2
 
-        ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
-        ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
-        ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
-        ass_fab.loc[(parcels2['area'] > 800) & (parcels2['area'] < 1600), 'n_size'] = '800 to 1600'
-        ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
-        ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
-        ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
+        # ass_fab.loc[:, 'area'] = parcels2.loc[:, 'geometry'].area
+        # ass_fab.loc[parcels2['area'] < 400, 'n_size'] = 'less than 400'
+        # ass_fab.loc[(parcels2['area'] > 400) & (parcels2['area'] < 800), 'n_size'] = '400 to 800'
+        # ass_fab.loc[(parcels2['area'] > 800) & (parcels2['area'] < 1600), 'n_size'] = '800 to 1600'
+        # ass_fab.loc[(parcels2['area'] > 1600) & (parcels2['area'] < 3200), 'n_size'] = '1600 to 3200'
+        # ass_fab.loc[(parcels2['area'] > 3200) & (parcels2['area'] < 6400), 'n_size'] = '3200 to 6400'
+        # ass_fab.loc[parcels2['area'] > 6400, 'n_size'] = 'more than 6400'
 
         land_use = ['LANDUSE', 'Landuse_pcl', 'LANDUSE_pcl']
         for col in land_use:
@@ -151,19 +152,19 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
                 ass_fab["n_use"] = [u[0] for u in pcl_bdg[col].unique()]
         ass_fab.loc[ass_fab['n_use'] == 'MX', 'n_use'] = 'CM' ### !!!
 
-        floor_area = ['floor_area', 'floor_area_bdg']
-        for col in floor_area:
-            if col in pcl_bdg_raw.columns:
-                ass_fab["total_finished_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+        # floor_area = ['floor_area', 'floor_area_bdg']
+        # for col in floor_area:
+        #     if col in pcl_bdg_raw.columns:
+        #         ass_fab["total_finished_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+        #
+        # # Get floor area from FAR if specific field does not exist
+        # if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
+        #     ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
 
-        # Get floor area from FAR if specific field does not exist
-        if len(set(pcl_bdg_raw.columns).intersection(floor_area)) == 0:
-            ass_fab["total_finished_area"] = pcl_bdg['area'] * pcl_bdg['FAR']
-
-        ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
-        for col in ftprt_area:
-            if col in pcl_bdg_raw.columns:
-                ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
+        # ftprt_area = ['ftprt_area', 'Shape_Area_bdg']
+        # for col in ftprt_area:
+        #     if col in pcl_bdg_raw.columns:
+        #         ass_fab["gross_building_area"] = (pcl_bdg.sum()[col] * pcl_bdg.mean()['maxstories']).values
 
         n_bed = ['n_bedrms', 'n_bedrms_bdg', 'num_bedrms_bdg', 'num_bedrms']
         for col in n_bed:
@@ -269,10 +270,10 @@ def proxy_indicators(local_gbd, experiment, parcels=True, cycling=True, transit=
     if morphology:
         for name, gdf in {'walk': streets, 'drive': streets, 'bike': cycling}.items():
             streets = Streets(gdf)
-            streets.gdf = streets.dimension()
-            streets.gdf = streets.direction()
+            # streets.gdf = streets.dimension()
+            # streets.gdf = streets.direction()
             streets.gdf[f'{name}_length'] = streets.gdf['length'].astype(int)
-            streets.gdf[f'{name}_straight'] = streets.gdf['straight']
+            # streets.gdf[f'{name}_straight'] = streets.gdf['straight']
             streets.gdf.to_file(local_gbd.gpkg, layer=f'network_{name}', encoding='ISO-8859-1')
 
     return local_gbd
